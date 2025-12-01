@@ -5,9 +5,9 @@
 | Número | Nome do Autor | Contribuição Percentual (%) |
 | :--- | :--- | :--- |
 | [115931] | [Joaquim Martins] | [Ex: 25%] |
-| [115884] | [Lázaro Sá] | [Ex: 25%] |
+| [115884] | [Lázaro Saxofone] | [Ex: 25%] |
 | [112657] | [Ricardo Carmo] | [Ex: 25%] |
-| [115359] | [Daniel Batista] | [Ex: 25%] |
+| [115359] | [Daniel Oliveira] | [Ex: 25%] |
 
 ---
 
