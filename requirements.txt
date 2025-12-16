@@ -1,0 +1,13 @@
+# requirements.txt - Dependências do Projeto SIC
+
+# Criptografia (ECDSA, X.509, DTLS)
+cryptography>=41.0.0
+
+# Bluetooth Low Energy (BLE)
+bleak>=0.21.0
+
+# Async IO e concorrência
+asyncio-mqtt>=0.16.0  # Opcional: para MQTT se necessário
+
+# Utilidades
+python-dateutil>=2.8.2

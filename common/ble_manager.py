@@ -1,0 +1,450 @@
+# common/ble_manager.py
+
+"""
+BLE Manager - Gerenciamento de conexões Bluetooth Low Energy
+Utiliza a biblioteca 'bleak' para scanning, conexão e comunicação.
+"""
+
+import asyncio
+import struct
+import uuid
+from typing import Optional, Dict, Callable, List, Tuple
+from bleak import BleakScanner, BleakClient
+from bleak.backends.device import BLEDevice
+from bleak.backends.scanner import AdvertisementData
+
+# UUIDs do serviço customizado SIC
+SIC_SERVICE_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64c"
+SIC_DATA_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64d"  # RX/TX de dados
+SIC_NOTIFY_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64e"  # Notificações
+
+# Manufacturer ID customizado para o projeto (0xFFFF = teste)
+SIC_MANUFACTURER_ID = 0xFFFF
+
+
+class BLEConnectionManager:
+    """
+    Gerenciador de conexões BLE para IoT Nodes.
+    Suporta scanning, conexão, envio/recebimento de mensagens e desconexão.
+    """
+    
+    def __init__(self, device_nid: str, on_message_received: Optional[Callable] = None):
+        """
+        Inicializa o gerenciador BLE.
+        
+        Args:
+            device_nid: NID do dispositivo (UUID de 128 bits)
+            on_message_received: Callback chamado quando mensagem é recebida
+        """
+        self.device_nid = device_nid
+        self.on_message_received = on_message_received
+        
+        # Conexão ativa (Uplink para nodes, ou múltiplas para Sink)
+        self.uplink_client: Optional[BleakClient] = None
+        self.uplink_address: Optional[str] = None
+        
+        # Downlinks (para nodes que atuam como roteadores)
+        self.downlink_clients: Dict[str, BleakClient] = {}  # NID -> Client
+        
+        # Scanning
+        self.scanner: Optional[BleakScanner] = None
+        self.discovered_devices: Dict[str, Tuple[BLEDevice, int]] = {}  # NID -> (Device, HopCount)
+        
+        print(f"[BLE] Manager inicializado para {device_nid[:8]}...")
+    
+    # ==================== SCANNING ====================
+    
+    def _parse_advertisement_data(self, advertisement_data: AdvertisementData) -> Optional[Tuple[str, int]]:
+        """
+        Extrai NID (UUID) e Hop Count do Advertisement Data (Manufacturer Data).
+        
+        Formato esperado:
+        - Company ID: 2 bytes (0xFFFF)
+        - NID: 16 bytes (UUID)
+        - Hop Count: 4 bytes (int32, little-endian)
+        
+        Returns:
+            (nid, hop_count) ou None se inválido
+        """
+        if not advertisement_data.manufacturer_data:
+            return None
+        
+        # Procurar pelos dados do fabricante SIC
+        if SIC_MANUFACTURER_ID not in advertisement_data.manufacturer_data:
+            return None
+        
+        data = advertisement_data.manufacturer_data[SIC_MANUFACTURER_ID]
+        
+        # Verificar tamanho mínimo (16 bytes NID + 4 bytes Hop Count)
+        if len(data) < 20:
+            return None
+        
+        try:
+            # Extrair NID (primeiros 16 bytes)
+            nid_bytes = data[:16]
+            nid = str(uuid.UUID(bytes=nid_bytes))
+            
+            # Extrair Hop Count (próximos 4 bytes, little-endian)
+            hop_count = struct.unpack('<i', data[16:20])[0]
+            
+            return (nid, hop_count)
+            
+        except (ValueError, struct.error) as e:
+            print(f"[BLE] Erro ao parsear Advertisement Data: {e}")
+            return None
+    
+    async def scan_for_uplinks(self, duration: float = 5.0) -> Dict[str, int]:
+        """
+        Realiza scanning BLE para descobrir dispositivos vizinhos.
+        
+        Args:
+            duration: Duração do scan em segundos
+            
+        Returns:
+            Dicionário {NID: HopCount} dos dispositivos descobertos
+        """
+        print(f"[BLE] Iniciando scanning por {duration}s...")
+        self.discovered_devices.clear()
+        
+        def detection_callback(device: BLEDevice, advertisement_data: AdvertisementData):
+            """Callback chamado para cada dispositivo descoberto"""
+            parsed = self._parse_advertisement_data(advertisement_data)
+            
+            if parsed:
+                nid, hop_count = parsed
+                
+                # Ignorar a si próprio
+                if nid == self.device_nid:
+                    return
+                
+                # Armazenar ou atualizar dispositivo
+                if nid not in self.discovered_devices or hop_count < self.discovered_devices[nid][1]:
+                    self.discovered_devices[nid] = (device, hop_count)
+                    print(f"[BLE] Descoberto: {nid[:8]}... (Hop: {hop_count}, RSSI: {advertisement_data.rssi})")
+        
+        # Iniciar scanning
+        scanner = BleakScanner(detection_callback=detection_callback)
+        await scanner.start()
+        await asyncio.sleep(duration)
+        await scanner.stop()
+        
+        print(f"[BLE] Scanning completo. {len(self.discovered_devices)} dispositivos encontrados.")
+        
+        # Retornar apenas NID -> HopCount
+        return {nid: hop for nid, (dev, hop) in self.discovered_devices.items()}
+    
+    # ==================== CONEXÃO ====================
+    
+    async def connect_to_device(self, target_nid: str) -> bool:
+        """
+        Conecta-se a um dispositivo específico (usado para estabelecer Uplink).
+        
+        Args:
+            target_nid: NID do dispositivo alvo
+            
+        Returns:
+            True se conectado com sucesso
+        """
+        if target_nid not in self.discovered_devices:
+            print(f"[BLE] ERRO: Dispositivo {target_nid[:8]}... não foi descoberto. Execute scan primeiro.")
+            return False
+        
+        device, hop_count = self.discovered_devices[target_nid]
+        
+        print(f"[BLE] Conectando ao {target_nid[:8]}... (endereço: {device.address})")
+        
+        try:
+            # Criar cliente BLE
+            client = BleakClient(device.address, disconnected_callback=self._on_disconnect)
+            await client.connect(timeout=10.0)
+            
+            if not client.is_connected:
+                print(f"[BLE] ERRO: Falha ao conectar a {target_nid[:8]}...")
+                return False
+            
+            # Armazenar conexão como Uplink
+            self.uplink_client = client
+            self.uplink_address = device.address
+            
+            print(f"[BLE] ✅ Conectado a {target_nid[:8]}... (Uplink estabelecido)")
+            
+            # Subscrever notificações
+            await self._subscribe_notifications(client)
+            
+            return True
+            
+        except Exception as e:
+            print(f"[BLE] ERRO ao conectar: {e}")
+            return False
+    
+    async def accept_downlink_connection(self, device_address: str, device_nid: str) -> bool:
+        """
+        Aceita uma conexão de um dispositivo Downlink (usado por roteadores/Sink).
+        
+        Args:
+            device_address: Endereço BLE do dispositivo
+            device_nid: NID do dispositivo
+            
+        Returns:
+            True se conexão aceita com sucesso
+        """
+        print(f"[BLE] Aceitando conexão Downlink de {device_nid[:8]}...")
+        
+        try:
+            client = BleakClient(device_address, disconnected_callback=self._on_disconnect)
+            await client.connect(timeout=10.0)
+            
+            if not client.is_connected:
+                return False
+            
+            # Armazenar como Downlink
+            self.downlink_clients[device_nid] = client
+            
+            print(f"[BLE] ✅ Downlink aceito: {device_nid[:8]}... (Total: {len(self.downlink_clients)})")
+            
+            # Subscrever notificações
+            await self._subscribe_notifications(client)
+            
+            return True
+            
+        except Exception as e:
+            print(f"[BLE] ERRO ao aceitar Downlink: {e}")
+            return False
+    
+    def _on_disconnect(self, client: BleakClient):
+        """Callback chamado quando uma conexão é perdida"""
+        address = client.address
+        print(f"[BLE] ⚠️ Desconexão detectada: {address}")
+        
+        # Verificar se era o Uplink
+        if self.uplink_client and self.uplink_client.address == address:
+            print(f"[BLE] 🚨 UPLINK PERDIDO!")
+            self.uplink_client = None
+            self.uplink_address = None
+            # Aqui poderia chamar um callback para notificar o IoTNode
+        
+        # Verificar se era um Downlink
+        for nid, downlink_client in list(self.downlink_clients.items()):
+            if downlink_client.address == address:
+                print(f"[BLE] Downlink {nid[:8]}... desconectado.")
+                del self.downlink_clients[nid]
+                break
+    
+    async def _subscribe_notifications(self, client: BleakClient):
+        """Subscreve à característica de notificações para receber mensagens"""
+        try:
+            await client.start_notify(
+                SIC_NOTIFY_CHARACTERISTIC_UUID,
+                self._notification_handler
+            )
+            print(f"[BLE] Notificações ativadas para {client.address}")
+        except Exception as e:
+            print(f"[BLE] AVISO: Não foi possível ativar notificações: {e}")
+    
+    def _notification_handler(self, sender: int, data: bytes):
+        """Handler chamado quando uma notificação BLE é recebida"""
+        print(f"[BLE] Mensagem recebida ({len(data)} bytes)")
+        
+        if self.on_message_received:
+            try:
+                # Converter bytes para mensagem (assumindo JSON serializado)
+                import json
+                message = json.loads(data.decode('utf-8'))
+                self.on_message_received(message, sender)
+            except Exception as e:
+                print(f"[BLE] ERRO ao processar mensagem: {e}")
+    
+    # ==================== ENVIO DE MENSAGENS ====================
+    
+    async def send_to_uplink(self, data: bytes) -> bool:
+        """
+        Envia dados para o Uplink através da característica GATT.
+        
+        Args:
+            data: Dados a enviar (bytes)
+            
+        Returns:
+            True se enviado com sucesso
+        """
+        if not self.uplink_client or not self.uplink_client.is_connected:
+            print(f"[BLE] ERRO: Sem conexão Uplink ativa.")
+            return False
+        
+        try:
+            await self.uplink_client.write_gatt_char(
+                SIC_DATA_CHARACTERISTIC_UUID,
+                data,
+                response=True
+            )
+            print(f"[BLE] ✉️ Enviado {len(data)} bytes para Uplink")
+            return True
+            
+        except Exception as e:
+            print(f"[BLE] ERRO ao enviar para Uplink: {e}")
+            return False
+    
+    async def send_to_downlink(self, target_nid: str, data: bytes) -> bool:
+        """
+        Envia dados para um Downlink específico.
+        
+        Args:
+            target_nid: NID do dispositivo Downlink
+            data: Dados a enviar (bytes)
+            
+        Returns:
+            True se enviado com sucesso
+        """
+        if target_nid not in self.downlink_clients:
+            print(f"[BLE] ERRO: Downlink {target_nid[:8]}... não conectado.")
+            return False
+        
+        client = self.downlink_clients[target_nid]
+        
+        if not client.is_connected:
+            print(f"[BLE] ERRO: Downlink {target_nid[:8]}... desconectado.")
+            return False
+        
+        try:
+            await client.write_gatt_char(
+                SIC_DATA_CHARACTERISTIC_UUID,
+                data,
+                response=True
+            )
+            print(f"[BLE] ✉️ Enviado {len(data)} bytes para Downlink {target_nid[:8]}...")
+            return True
+            
+        except Exception as e:
+            print(f"[BLE] ERRO ao enviar para Downlink: {e}")
+            return False
+    
+    async def broadcast_to_downlinks(self, data: bytes) -> int:
+        """
+        Envia dados para todos os Downlinks (usado para Heartbeat).
+        
+        Args:
+            data: Dados a enviar (bytes)
+            
+        Returns:
+            Número de Downlinks que receberam com sucesso
+        """
+        if not self.downlink_clients:
+            print(f"[BLE] AVISO: Nenhum Downlink conectado para broadcast.")
+            return 0
+        
+        success_count = 0
+        
+        for nid, client in self.downlink_clients.items():
+            if await self.send_to_downlink(nid, data):
+                success_count += 1
+        
+        print(f"[BLE] Broadcast completo: {success_count}/{len(self.downlink_clients)} Downlinks alcançados.")
+        return success_count
+    
+    # ==================== DESCONEXÃO ====================
+    
+    async def disconnect_uplink(self):
+        """Desconecta do Uplink atual"""
+        if self.uplink_client:
+            print(f"[BLE] Desconectando do Uplink ({self.uplink_address})...")
+            try:
+                await self.uplink_client.disconnect()
+            except Exception as e:
+                print(f"[BLE] ERRO ao desconectar: {e}")
+            finally:
+                self.uplink_client = None
+                self.uplink_address = None
+                print(f"[BLE] Uplink desconectado.")
+    
+    async def disconnect_downlink(self, target_nid: str):
+        """Desconecta de um Downlink específico"""
+        if target_nid not in self.downlink_clients:
+            print(f"[BLE] AVISO: Downlink {target_nid[:8]}... não está conectado.")
+            return
+        
+        client = self.downlink_clients[target_nid]
+        print(f"[BLE] Desconectando Downlink {target_nid[:8]}...")
+        
+        try:
+            await client.disconnect()
+        except Exception as e:
+            print(f"[BLE] ERRO ao desconectar Downlink: {e}")
+        finally:
+            del self.downlink_clients[target_nid]
+            print(f"[BLE] Downlink {target_nid[:8]}... desconectado.")
+    
+    async def disconnect_all(self):
+        """Desconecta de todos os dispositivos (Uplink e Downlinks)"""
+        print(f"[BLE] Desconectando de todos os dispositivos...")
+        
+        # Desconectar Uplink
+        await self.disconnect_uplink()
+        
+        # Desconectar todos os Downlinks
+        downlink_nids = list(self.downlink_clients.keys())
+        for nid in downlink_nids:
+            await self.disconnect_downlink(nid)
+        
+        print(f"[BLE] Todas as conexões foram encerradas.")
+    
+    # ==================== UTILITÁRIOS ====================
+    
+    def is_connected_to_uplink(self) -> bool:
+        """Verifica se há conexão ativa com Uplink"""
+        return self.uplink_client is not None and self.uplink_client.is_connected
+    
+    def get_downlink_count(self) -> int:
+        """Retorna o número de Downlinks conectados"""
+        return len(self.downlink_clients)
+    
+    def get_connected_downlinks(self) -> List[str]:
+        """Retorna lista de NIDs dos Downlinks conectados"""
+        return list(self.downlink_clients.keys())
+
+
+# ==================== ADVERTISING (Para Sink e Roteadores) ====================
+
+class BLEAdvertiser:
+    """
+    Gerenciador de Advertisement BLE para permitir que outros dispositivos descubram este node.
+    Nota: Bleak não suporta Advertisement diretamente. Esta classe é um placeholder
+    para integração futura com bibliotecas específicas de plataforma.
+    """
+    
+    def __init__(self, device_nid: str, hop_count: int):
+        self.device_nid = device_nid
+        self.hop_count = hop_count
+        print(f"[BLE ADV] Advertiser inicializado (NID: {device_nid[:8]}..., Hop: {hop_count})")
+    
+    def build_manufacturer_data(self) -> bytes:
+        """
+        Constrói os dados de fabricante com NID e Hop Count.
+        
+        Returns:
+            Bytes contendo NID (16) + Hop Count (4)
+        """
+        nid_bytes = uuid.UUID(self.device_nid).bytes
+        hop_bytes = struct.pack('<i', self.hop_count)
+        return nid_bytes + hop_bytes
+    
+    async def start_advertising(self):
+        """
+        Inicia o Advertisement BLE.
+        
+        NOTA: Bleak não suporta Advertisement mode. 
+        Para implementação real, seria necessário usar:
+        - Linux: BlueZ D-Bus API diretamente
+        - Windows: Windows.Devices.Bluetooth.Advertisement
+        - macOS: CoreBluetooth (não suporta peripheral mode facilmente)
+        """
+        print(f"[BLE ADV] ⚠️ Advertisement não suportado diretamente pelo Bleak.")
+        print(f"[BLE ADV] Para implementação completa, use BlueZ D-Bus API (Linux) ou APIs nativas.")
+        print(f"[BLE ADV] Dados que seriam transmitidos: NID={self.device_nid[:8]}..., Hop={self.hop_count}")
+    
+    async def stop_advertising(self):
+        """Para o Advertisement BLE"""
+        print(f"[BLE ADV] Advertisement parado.")
+    
+    def update_hop_count(self, new_hop_count: int):
+        """Atualiza o Hop Count no Advertisement"""
+        self.hop_count = new_hop_count
+        print(f"[BLE ADV] Hop Count atualizado para {new_hop_count}")

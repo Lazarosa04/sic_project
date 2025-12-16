@@ -15,10 +15,62 @@
 
 O projeto está organizado em módulos Python seguindo a divisão lógica e os requisitos de entrega:
 
-* **`common/`**: Código partilhado entre o Sink e os Nodes: Lógica de empacotamento de rede, **Heartbeat**, Funções de Assinatura/Verificação e **Serviço DTLS** (`heartbeat.py`, `dtls_service.py`, `network_utils.py`).
-* **`node/`**: Lógica da aplicação do dispositivo IoT/Roteador (`iot_node.py`), incluindo Descoberta, Roteamento, Liveness e Envio de Serviços.
-* **`sink/`**: Lógica da aplicação do host central (`sink_host.py`), para Assinatura de Heartbeat, Carregamento de Chaves e Processamento de Serviços Seguros (Inbox).
-* **`support/`**: Ferramentas de suporte não utilizadas durante a operação da rede, como a **Autoridade Certificadora (CA)** e a geração de certificados de identidade (`ca_manager.py`).
+### Estrutura de Diretórios
+
+```
+sic_project/
+├── common/              # Código partilhado
+│   ├── ble_manager.py   # ✨ Gerenciador BLE (scanning, conexão, desconexão)
+│   ├── dtls_service.py  # Serviço DTLS Inbox (assinatura end-to-end)
+│   ├── heartbeat.py     # Heartbeat com assinatura digital
+│   └── network_utils.py # Utilitários de rede (Advertisement Data)
+│
+├── node/                # Lógica do Node IoT
+│   └── iot_node.py      # Node IoT/Roteador (descoberta, roteamento, liveness)
+│
+├── sink/                # Lógica do Sink
+│   ├── sink_host.py     # Sink Host (processamento de mensagens seguras)
+│   └── sink_app.py      # Aplicação Sink (Heartbeat periódico)
+│
+├── support/             # Ferramentas de suporte
+│   ├── ca_manager.py    # Autoridade Certificadora (geração de certificados)
+│   └── certs/           # Certificados e chaves geradas
+│
+├── examples/            # Scripts de teste
+│   ├── quick_ble_test.py        # Teste rápido de BLE
+│   ├── test_ble_connection.py   # Suite completa de testes BLE
+│   └── README.md                # Documentação dos exemplos
+│
+├── scripts/             # Scripts utilitários
+│   └── check_dependencies.py    # Verificação de dependências
+│
+├── docs/                # Documentação
+│   └── BLE_GUIDE.md     # Guia completo de implementação BLE
+│
+├── requirements.txt     # Dependências do projeto
+├── Makefile            # Comandos facilitadores
+├── QUICK_START.md      # Guia de início rápido
+├── IMPLEMENTATION_SUMMARY.md  # Resumo de implementação
+└── README.md           # Este arquivo
+```
+
+### Descrição dos Módulos
+
+* **`common/`**: Código partilhado entre o Sink e os Nodes
+  * `ble_manager.py`: Gerenciador BLE completo (scanning, conexão, desconexão)
+  * `dtls_service.py`: Serviço DTLS Inbox
+  * `heartbeat.py`: Heartbeat com assinatura digital
+  * `network_utils.py`: Utilitários de rede
+
+* **`node/`**: Lógica da aplicação do dispositivo IoT/Roteador
+  * `iot_node.py`: Descoberta, Roteamento, Liveness e Envio de Serviços
+
+* **`sink/`**: Lógica da aplicação do host central
+  * `sink_host.py`: Processamento de Serviços Seguros (Inbox)
+  * `sink_app.py`: Loop de Heartbeat periódico
+
+* **`support/`**: Ferramentas de suporte
+  * `ca_manager.py`: Autoridade Certificadora e geração de certificados
 
 ---
 
@@ -67,26 +119,101 @@ A segurança é garantida por primitivas de criptografia baseadas em Curvas Elí
 
 ---
 
-## ❌ 5. Funcionalidades Não Implementadas ou Parcialmente
+## ✅ 5. Implementação BLE (Bluetooth Low Energy)
 
-* **Implementação BLE real:** A camada de comunicação Bluetooth de Baixa Energia (BLE) com `bleak` não está implementada (substituída por funções assíncronas e simulações de I/O) devido à indisponibilidade inicial do hardware.
+### 5.1. BLE Manager (`common/ble_manager.py`)
+
+* **Implementação:** Gerenciador completo de conexões BLE usando a biblioteca `bleak`.
+* **Funcionalidades:**
+    * **Scanning:** Descoberta de dispositivos vizinhos através de Advertisement Data
+    * **Conexão:** Estabelecimento de conexões GATT com Uplinks e Downlinks
+    * **Desconexão:** Encerramento controlado de conexões BLE
+    * **Envio/Recebimento:** Comunicação bidirecional via características GATT customizadas
+    * **Advertisement:** Broadcast de NID e Hop Count (requer APIs nativas da plataforma)
+
+### 5.2. Características GATT Customizadas
+
+* **Serviço SIC:** UUID `d227d8e8-d4d1-4475-a835-189f7823f64c`
+* **Característica de Dados:** UUID `d227d8e8-d4d1-4475-a835-189f7823f64d` (Read/Write)
+* **Característica de Notificações:** UUID `d227d8e8-d4d1-4475-a835-189f7823f64e` (Notify)
+
+### 5.3. Advertisement Data Format
+
+* **Manufacturer ID:** 0xFFFF (teste)
+* **Payload:** NID (16 bytes) + Hop Count (4 bytes, little-endian)
+
+### 5.4. Integração nos Nodes
+
+* **IoTNode:** 
+    * `find_uplink_candidates()` - Scanning BLE real
+    * `connect_to_uplink()` - Conexão BLE ao melhor candidato
+    * `disconnect_uplink()` - Desconexão BLE e limpeza de estado
+    * `send_message_ble()` - Envio de mensagens via GATT
+
+* **SinkHost:**
+    * `send_heartbeat_ble()` - Broadcast de Heartbeat para Downlinks
+    * Aceitação de conexões de múltiplos Nodes
+
+### 5.5. Limitações e Notas
+
+* **Advertisement Mode:** `bleak` não suporta modo peripheral/advertising. Para implementação completa:
+    * Linux: Usar BlueZ D-Bus API diretamente
+    * Windows: Windows.Devices.Bluetooth.Advertisement API
+    * macOS: CoreBluetooth (suporte limitado)
+* **Hardware:** Requer adaptador BLE e permissões adequadas do sistema
+* **Testes:** Script `examples/test_ble_connection.py` demonstra todas as funcionalidades
+
+## ❌ 6. Funcionalidades Não Implementadas ou Parcialmente
+
+* **Advertisement nativo:** Requer integração com APIs específicas de plataforma (BlueZ/Windows/macOS)
 * **Múltiplos Sinks:** Não implementado. O sistema assume um único Sink.
 
 ---
 
-## 🛠 Instruções de Execução (Testes Lógicos)
+## 🛠 Instruções de Execução
 
 O sistema deve ser executado a partir do diretório raiz (`~/sic_project`) com o `venv` ativado.
+
+### Instalação de Dependências
+
+```bash
+# Criar ambiente virtual (se necessário)
+python3 -m venv venv
+source venv/bin/activate  # Linux/macOS
+# ou: venv\Scripts\activate  # Windows
+
+# Instalar dependências
+pip install -r requirements.txt
+```
+
+### Testes
 
 1.  **Geração de Identidades:** (Cria chaves, certificados e NIDs)
     ```bash
     python3 support/ca_manager.py
     ```
+
 2.  **Teste de Roteamento/Liveness:** (Demonstra Failover e FT)
     ```bash
     python3 node/iot_node.py
     ```
+
 3.  **Teste de Serviço Seguro (DTLS Inbox):** (Demonstra Assinatura/Verificação End-to-End)
     ```bash
     python3 sink/sink_host.py
+    ```
+
+4.  **Teste BLE Completo:** (Demonstra Scanning, Conexão e Desconexão BLE)
+    ```bash
+    python3 examples/test_ble_connection.py
+    ```
+    
+    **Nota:** Para testes BLE reais, é necessário:
+    - Adaptador Bluetooth Low Energy ativo
+    - Permissões de sistema apropriadas
+    - Múltiplos dispositivos com o código executando
+
+5.  **Execução do Sink com Heartbeat:** (Inicia o Sink e envia Heartbeats periódicos)
+    ```bash
+    python3 sink/sink_app.py
     ```

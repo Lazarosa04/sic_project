@@ -7,12 +7,14 @@ import time
 import threading
 import struct 
 import asyncio 
+import json
 from typing import Optional, Dict, Any
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from cryptography.x509 import load_pem_x509_certificate 
 from common.heartbeat import verify_heartbeat, load_sink_keys, sign_heartbeat 
-from common.heartbeat import HEARTBEAT_PACING_SECONDS 
+from common.heartbeat import HEARTBEAT_PACING_SECONDS
+from common.ble_manager import BLEConnectionManager, BLEAdvertiser 
 
 # --- CORREÇÃO DE AMBIENTE: MOVIDA PARA O TOPO ---
 # Adiciona o diretório raiz ao caminho de pesquisa antes de qualquer outra importação local.
@@ -59,6 +61,18 @@ class IoTNode:
         self.lost_heartbeats: int = 0
         self.messages_routed_uplink: int = 0
         
+        # 4. BLE MANAGER (Conexões BLE reais)
+        self.ble_manager: Optional[BLEConnectionManager] = None
+        self.ble_advertiser: Optional[BLEAdvertiser] = None
+        
+        # Inicializar BLE Manager se NID estiver disponível
+        if self.nid:
+            self.ble_manager = BLEConnectionManager(
+                device_nid=self.nid,
+                on_message_received=self._on_ble_message_received
+            )
+            self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
+        
         print(f"[{self.name}] Inicializado. NID: {self.nid}, Hop Count: {self.hop_count}")
 
     def _load_identity(self):
@@ -93,6 +107,16 @@ class IoTNode:
         except FileNotFoundError:
             print("[AVISO] Certificado do Sink ausente para verificação de Heartbeat.")
             return None
+    
+    def _on_ble_message_received(self, message: Dict, sender_handle: int):
+        """Callback chamado quando uma mensagem BLE é recebida"""
+        print(f"[{self.name}] Mensagem BLE recebida (handle: {sender_handle})")
+        
+        # Determinar o NID do sender (assumindo que vem na mensagem)
+        source_link_nid = message.get("source_nid", "UNKNOWN")
+        
+        # Processar mensagem através da lógica de roteamento existente
+        self.process_incoming_message(message, source_link_nid)
 
     # --- LÓGICA DE SERVIÇOS SEGUROS (NOVA) ---
 
@@ -126,6 +150,21 @@ class IoTNode:
         
         print(f"[{self.name}] Inbox SEGURO pronto para envio para {destination_nid[:8]}...")
         return message
+    
+    async def send_message_ble(self, message: Dict) -> bool:
+        """Envia mensagem via BLE para o uplink"""
+        if not self.ble_manager or not self.ble_manager.is_connected_to_uplink():
+            print(f"[{self.name}] ERRO: Sem conexão BLE ativa.")
+            return False
+        
+        try:
+            # Serializar mensagem para JSON bytes
+            data = json.dumps(message).encode('utf-8')
+            success = await self.ble_manager.send_to_uplink(data)
+            return success
+        except Exception as e:
+            print(f"[{self.name}] ERRO ao enviar mensagem BLE: {e}")
+            return False
 
     # --- LÓGICA DE LIVENESS ---
 
@@ -144,7 +183,7 @@ class IoTNode:
             else:
                 print(f"[{self.name}][HB] Recebido. Assinatura INVÁLIDA! (Ataque?) Descartando.")
 
-    def check_liveness(self):
+    async def check_liveness(self):
         """ Verifica se o Uplink falhou (Heartbeat Perdido). """
         if self.uplink_nid is None: return
 
@@ -152,25 +191,36 @@ class IoTNode:
         
         if self.lost_heartbeats > MAX_LOST_HEARTBEATS:
             print(f"[{self.name}] 🚨 LIMITE DE PERDAS ATINGIDO ({self.lost_heartbeats})!")
-            self.disconnect_uplink()
+            await self.disconnect_uplink()
         else:
             print(f"[{self.name}] Heartbeat perdido. Total perdido: {self.lost_heartbeats} / {MAX_LOST_HEARTBEATS}.")
 
-    def disconnect_uplink(self):
+    async def disconnect_uplink(self):
         """ Rotina de desconexão (Secção 3): quebra Uplink, Downlinks, e reseta estado. """
         if not self.uplink_nid: return
 
         print(f"\n[{self.name}] >>> DISCONEXÃO INICIADA: Uplink {self.uplink_nid[:8]}... CAIU! <<<")
         
+        # Desconectar BLE do Uplink
+        if self.ble_manager:
+            await self.ble_manager.disconnect_uplink()
+        
+        # Desconectar e limpar Downlinks
         downlink_nids = list(self.downlinks.keys())
         for nid in downlink_nids:
             print(f"[{self.name}] Quebrando Downlink para {nid[:8]}...")
+            if self.ble_manager:
+                await self.ble_manager.disconnect_downlink(nid)
             del self.downlinks[nid]
             
         self.uplink_nid = None
         self.hop_count = DISCONNECTED_HOP_COUNT
         self.lost_heartbeats = 0
         self.forwarding_table = {} 
+        
+        # Atualizar advertiser
+        if self.ble_advertiser:
+            self.ble_advertiser.update_hop_count(DISCONNECTED_HOP_COUNT)
         
         print(f"[{self.name}] Estado Resetado. INICIAR REENTRADA NA REDE (SCANNING)!")
         
@@ -226,14 +276,54 @@ class IoTNode:
         if not self.nid: return b''
         return build_advertisement_data(self.nid, self.hop_count)
         
-    async def find_uplink_candidates(self) -> Dict[str, int]:
-        print(f"[{self.name}] Iniciando Descoberta de Uplink...")
-        return {SINK_NID_STR: 0, NODE_B_NID_STR: 1}
+    async def find_uplink_candidates(self, scan_duration: float = 5.0) -> Dict[str, int]:
+        """Realiza scanning BLE real para descobrir uplinks candidatos"""
+        print(f"[{self.name}] Iniciando Descoberta BLE de Uplink...")
+        
+        if not self.ble_manager:
+            print(f"[{self.name}] ERRO: BLE Manager não inicializado.")
+            return {}
+        
+        try:
+            # Realizar scanning BLE real
+            candidates = await self.ble_manager.scan_for_uplinks(duration=scan_duration)
+            return candidates
+        except Exception as e:
+            print(f"[{self.name}] ERRO no scanning BLE: {e}")
+            # Fallback para simulação em caso de erro
+            print(f"[{self.name}] Usando modo simulado...")
+            return {SINK_NID_STR: 0, NODE_B_NID_STR: 1}
 
     def choose_uplink(self, candidates: Dict[str, int]) -> Optional[str]:
         if not candidates: return None
         best_candidate_nid = min(candidates, key=candidates.get)
         return best_candidate_nid
+    
+    async def connect_to_uplink(self, uplink_nid: str) -> bool:
+        """Estabelece conexão BLE com o uplink escolhido"""
+        print(f"[{self.name}] Conectando ao Uplink {uplink_nid[:8]}... via BLE")
+        
+        if not self.ble_manager:
+            print(f"[{self.name}] ERRO: BLE Manager não disponível.")
+            return False
+        
+        # Conectar via BLE
+        success = await self.ble_manager.connect_to_device(uplink_nid)
+        
+        if success:
+            self.uplink_nid = uplink_nid
+            # Atualizar hop count (assumindo que está em discovered_devices)
+            if uplink_nid in self.ble_manager.discovered_devices:
+                _, uplink_hop = self.ble_manager.discovered_devices[uplink_nid]
+                self.hop_count = uplink_hop + 1
+            
+            # Atualizar advertiser
+            if self.ble_advertiser:
+                self.ble_advertiser.update_hop_count(self.hop_count)
+            
+            print(f"[{self.name}] ✅ Conectado ao Uplink. Novo Hop Count: {self.hop_count}")
+        
+        return success
 
     def print_status(self):
         print("\n" + "="*50)
@@ -295,22 +385,22 @@ async def simulate_liveness():
     
     # Ciclo 2: Heartbeat Perdido (Simulação: Heartbeat não chega)
     print("\n--- CICLO 2: SIMULANDO PERDA (1ª Perda) ---")
-    node_a.check_liveness()
+    await node_a.check_liveness()
     await asyncio.sleep(0.1)
 
     # Ciclo 3: Heartbeat Perdido (2ª Perda)
     print("\n--- CICLO 3: SIMULANDO PERDA (2ª Perda) ---")
-    node_a.check_liveness()
+    await node_a.check_liveness()
     await asyncio.sleep(0.1)
 
     # Ciclo 4: Heartbeat Perdido (3ª Perda -> FALHA!)
     print("\n--- CICLO 4: SIMULANDO PERDA (3ª Perda -> DISCONEXÃO) ---")
-    node_a.check_liveness()
+    await node_a.check_liveness()
     await asyncio.sleep(0.1)
 
     # Ciclo 5: Verificação do estado final
     print("\n--- CICLO 5: VERIFICANDO ESTADO FINAL ---")
-    node_a.check_liveness() 
+    await node_a.check_liveness() 
 
     # Verifica o estado final
     node_a.print_status()

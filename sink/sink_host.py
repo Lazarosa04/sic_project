@@ -17,6 +17,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 
 from common.heartbeat import sign_heartbeat 
 from common.dtls_service import unseal_inbox_message 
+from common.ble_manager import BLEConnectionManager, BLEAdvertiser
 from support.ca_manager import OUTPUT_DIR 
 from node.iot_node import IoTNode 
 
@@ -47,6 +48,18 @@ class SinkHost:
         self.node_public_keys: Dict[str, ec.EllipticCurvePublicKey] = {}
         # O _load_all_node_certificates original é mantido para carregar chaves estáticas.
         self._load_all_node_certificates()
+        
+        # BLE Manager (Sink como central/peripheral)
+        self.ble_manager: Optional[BLEConnectionManager] = None
+        self.ble_advertiser: Optional[BLEAdvertiser] = None
+        
+        if self.nid:
+            self.ble_manager = BLEConnectionManager(
+                device_nid=self.nid,
+                on_message_received=self._on_ble_message_received
+            )
+            # Sink tem Hop Count 0
+            self.ble_advertiser = BLEAdvertiser(self.nid, 0)
         
         print(f"[{self.name}] Inicializado. NID: {self.nid}")
 
@@ -107,6 +120,12 @@ class SinkHost:
             print(f"[{self.name}] CHAVE ADICIONADA: {node_name} ({node_nid[:8]}...)")
         else:
             print(f"[{self.name}] AVISO: Certificado de {node_name} ausente para adição manual.")
+    
+    def _on_ble_message_received(self, message: Dict, sender_handle: int):
+        """Callback para mensagens BLE recebidas pelo Sink"""
+        print(f"[{self.name}] Mensagem BLE recebida (handle: {sender_handle})")
+        source_link_nid = message.get("source_nid", "UNKNOWN")
+        self.process_incoming_message(message, source_link_nid)
                     
     def process_incoming_message(self, message: Dict, source_link_nid: str):
         """
@@ -143,10 +162,38 @@ class SinkHost:
             
         else:
             print(f"[{self.name}] Mensagem de dados genérica recebida de {source_nid[:8]}... (Descartada)")
+    
+    async def send_heartbeat_ble(self, heartbeat_counter: int) -> int:
+        """Envia Heartbeat para todos os Downlinks via BLE"""
+        if not self.private_key:
+            print(f"[{self.name}] ERRO: Chave privada não disponível para assinar Heartbeat.")
+            return 0
+        
+        if not self.ble_manager:
+            print(f"[{self.name}] ERRO: BLE Manager não disponível.")
+            return 0
+        
+        # Assinar Heartbeat
+        hb_msg = sign_heartbeat(heartbeat_counter, self.private_key)
+        
+        # Criar mensagem de rede
+        message = {
+            "source_nid": self.nid,
+            "destination_nid": "BROADCAST",
+            "is_heartbeat": True,
+            "heartbeat_data": hb_msg
+        }
+        
+        # Serializar e enviar via BLE para todos os Downlinks
+        data = json.dumps(message).encode('utf-8')
+        success_count = await self.ble_manager.broadcast_to_downlinks(data)
+        
+        print(f"[{self.name}][HB:{heartbeat_counter}] Enviado para {success_count} Downlinks via BLE.")
+        return success_count
 
 
 async def simulate_secure_service():
-    """ Simula um Node A a enviar uma mensagem Inbox segura para o Sink. """
+    """ Simula um Node A a enviar uma mensagem Inbox segura para o Sink usando BLE. """
     
     # 1. Inicializar Node A (precisa carregar a sua própria chave privada)
     node_a = IoTNode(name=NODE_A_NAME, is_sink=False)
@@ -162,6 +209,8 @@ async def simulate_secure_service():
         print("[ERRO FATAL] Identidade de Nó/Sink ausente. Certifique-se que o ca_manager.py foi executado.")
         return
 
+    print("\n[INFO] Modo de simulação (BLE real requer hardware). Pulando scanning/conexão BLE...")
+    
     # Simulação da Conexão Uplink (para permitir o envio)
     node_a.uplink_nid = sink.nid 
     node_a.hop_count = 1 

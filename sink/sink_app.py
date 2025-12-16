@@ -41,38 +41,49 @@ class SinkApplication(IoTNode):
         print(f"\n[SINK] Aplicação Sink inicializada com NID: {self.nid}")
         print(f"[SINK] Pronto para enviar Heartbeats a cada {HEARTBEAT_PACING_SECONDS}s.")
 
-    def send_heartbeat(self):
+    async def send_heartbeat(self):
         """
-        Gera, assina e envia o Heartbeat para todos os Downlinks (multi-unicast).
+        Gera, assina e envia o Heartbeat para todos os Downlinks (multi-unicast) via BLE.
         """
         self.heartbeat_counter += 1
         
         # 1. Assinar a mensagem
         hb_msg = sign_heartbeat(self.heartbeat_counter, self.private_key)
         
-        print(f"[{self.name}][HB:{self.heartbeat_counter}] Enviando Heartbeat assinado para {len(self.downlinks)} Downlinks.")
+        # 2. Verificar se há BLE Manager disponível
+        if not self.ble_manager:
+            print(f"[{self.name}][HB:{self.heartbeat_counter}] BLE Manager não disponível. Modo simulação.")
+            return
         
-        # 2. Multi-Unicast (Simulação)
-        for downlink_nid in self.downlinks.keys():
-            # No mundo real: Usaria BLE para enviar a mensagem através da conexão Bluetooth
-            # Aqui simulamos o roteamento no módulo Node (o Sink não roteia para si próprio)
-            
-            # Estrutura da mensagem de rede (Simplificada)
-            message_payload = {
-                "source_nid": self.nid, # O Sink é a origem
-                "destination_nid": downlink_nid, # O Heartbeat inunda, mas o Node receptor decide o que fazer
-                "is_heartbeat": True,
-                "heartbeat_data": hb_msg 
-            }
-            
-            print(f"  -> [BLE] Enviado para {downlink_nid[:8]}...")
+        # 3. Enviar via BLE para todos os Downlinks conectados
+        downlink_count = self.ble_manager.get_downlink_count()
+        
+        if downlink_count == 0:
+            print(f"[{self.name}][HB:{self.heartbeat_counter}] Nenhum Downlink conectado. Aguardando conexões...")
+            return
+        
+        # Estrutura da mensagem de rede
+        message_payload = {
+            "source_nid": self.nid,
+            "destination_nid": "BROADCAST",
+            "is_heartbeat": True,
+            "heartbeat_data": hb_msg 
+        }
+        
+        # Serializar para JSON
+        import json
+        data = json.dumps(message_payload).encode('utf-8')
+        
+        # Enviar via BLE
+        success_count = await self.ble_manager.broadcast_to_downlinks(data)
+        print(f"[{self.name}][HB:{self.heartbeat_counter}] Enviado para {success_count}/{downlink_count} Downlinks via BLE.")
             
     async def heartbeat_loop(self):
         """
         Loop assíncrono para enviar o Heartbeat periodicamente.
         """
         while True:
-            self.send_heartbeat()
+            await self.send_heartbeat()
             await asyncio.sleep(HEARTBEAT_PACING_SECONDS)
 
 # --- Função principal para iniciar o Sink ---
