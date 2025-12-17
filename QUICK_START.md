@@ -16,7 +16,7 @@
 
 ### Passo 1: Clonar/Navegar para o projeto
 ```bash
-cd /home/daniel/Desktop/SIC/sic_project
+cd PATH_TO_PROJECT
 ```
 
 ### Passo 2: Criar ambiente virtual (recomendado)
@@ -34,6 +34,7 @@ pip install -r requirements.txt
 ### Passo 4: Verificar instalação do Bleak
 ```bash
 python3 -c "import bleak; print('Bleak instalado:', bleak.__version__)"
+#ou python3 -m pip show bleak
 ```
 
 ---
