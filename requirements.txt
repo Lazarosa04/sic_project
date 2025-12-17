@@ -5,6 +5,7 @@ cryptography>=41.0.0
 
 # Bluetooth Low Energy (BLE)
 bleak>=0.21.0
+bless>=0.2.5  # BLE Peripheral/Server (advertising)
 
 # Async IO e concorrência
 asyncio-mqtt>=0.16.0  # Opcional: para MQTT se necessário
