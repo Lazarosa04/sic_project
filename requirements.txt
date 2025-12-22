@@ -12,3 +12,4 @@ asyncio-mqtt>=0.16.0  # Opcional: para MQTT se necessário
 
 # Utilidades
 python-dateutil>=2.8.2
+dbus-next>=0.2.3  # D-Bus client required for BlueZ LE Advertising on Linux (lowered to available version)
