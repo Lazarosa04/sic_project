@@ -153,37 +153,63 @@ class BLEConnectionManager:
         Returns:
             True se conectado com sucesso
         """
+        # If not in discovered list, attempt a short rescan first
         if target_nid not in self.discovered_devices:
-            print(f"[BLE] ERRO: Dispositivo {target_nid[:8]}... não foi descoberto. Execute scan primeiro.")
+            print(f"[BLE] Dispositivo {target_nid[:8]}... não encontrado no cache. Tentando rescan rápido...")
+            try:
+                await self.scan_for_uplinks(duration=3.0)
+            except Exception as e:
+                print(f"[BLE] Aviso: rescan falhou: {e}")
+
+        if target_nid not in self.discovered_devices:
+            print(f"[BLE] ERRO: Dispositivo {target_nid[:8]}... não foi descoberto após rescan. Execute scan primeiro.")
             return False
-        
+
         device, hop_count = self.discovered_devices[target_nid]
-        
+
         print(f"[BLE] Conectando ao {target_nid[:8]}... (endereço: {device.address})")
-        
-        try:
-            # Criar cliente BLE
-            client = BleakClient(device.address, disconnected_callback=self._on_disconnect)
-            await client.connect(timeout=10.0)
-            
-            if not client.is_connected:
-                print(f"[BLE] ERRO: Falha ao conectar a {target_nid[:8]}...")
-                return False
-            
-            # Armazenar conexão como Uplink
-            self.uplink_client = client
-            self.uplink_address = device.address
-            
-            print(f"[BLE] ✅ Conectado a {target_nid[:8]}... (Uplink estabelecido)")
-            
-            # Subscrever notificações
-            await self._subscribe_notifications(client)
-            
-            return True
-            
-        except Exception as e:
-            print(f"[BLE] ERRO ao conectar: {e}")
-            return False
+
+        # Try connecting a few times — sometimes addresses are transient/unresolved
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                client = BleakClient(device.address, disconnected_callback=self._on_disconnect)
+                await client.connect(timeout=10.0)
+
+                if not client.is_connected:
+                    raise RuntimeError('client.is_connected is False')
+
+                # Armazenar conexão como Uplink
+                self.uplink_client = client
+                self.uplink_address = device.address
+
+                print(f"[BLE] ✅ Conectado a {target_nid[:8]}... (Uplink estabelecido)")
+
+                # Subscrever notificações
+                await self._subscribe_notifications(client)
+
+                return True
+
+            except Exception as e:
+                # Specific Bleak backends may report 'Device with address X was not found.'
+                print(f"[BLE] ERRO ao conectar (tentativa {attempt}/{max_attempts}): {e}")
+
+                # If last attempt, give up
+                if attempt >= max_attempts:
+                    print(f"[BLE] Falha ao conectar depois de {max_attempts} tentativas.")
+                    return False
+
+                # Wait briefly and try a fresh scan to refresh device info/address resolution
+                await asyncio.sleep(1.0)
+                try:
+                    await self.scan_for_uplinks(duration=2.0)
+                    if target_nid in self.discovered_devices:
+                        device, hop_count = self.discovered_devices[target_nid]
+                        print(f"[BLE] Rescan encontrou dispositivo {target_nid[:8]}... (endereço: {device.address}), retrying")
+                    else:
+                        print(f"[BLE] Rescan não encontrou {target_nid[:8]}..., nova tentativa em breve")
+                except Exception as e2:
+                    print(f"[BLE] Aviso: rescan durante retry falhou: {e2}")
     
     async def accept_downlink_connection(self, device_address: str, device_nid: str) -> bool:
         """

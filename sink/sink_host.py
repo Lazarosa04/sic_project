@@ -18,6 +18,15 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 from common.heartbeat import sign_heartbeat 
 from common.dtls_service import unseal_inbox_message 
 from common.ble_manager import BLEConnectionManager, BLEAdvertiser
+# Prefer BlueZAdvertiser on Linux if available (BlueZ + dbus-next)
+try:
+    from common.ble_advertiser_bluez import BlueZAdvertiser
+except Exception:
+    BlueZAdvertiser = None
+try:
+    from common.ble_gatt_server_bluez import BlueZGattServer
+except Exception:
+    BlueZGattServer = None
 from support.ca_manager import OUTPUT_DIR 
 from node.iot_node import IoTNode 
 
@@ -58,8 +67,41 @@ class SinkHost:
                 device_nid=self.nid,
                 on_message_received=self._on_ble_message_received
             )
-            # Sink tem Hop Count 0
-            self.ble_advertiser = BLEAdvertiser(self.nid, 0)
+            # Sink tem Hop Count 0. Preferir BlueZAdvertiser quando possível.
+            # Determina o adapter a usar a partir da variável de ambiente `SIC_BLE_ADAPTER`.
+            adapter = os.getenv('SIC_BLE_ADAPTER', 'hci0')
+            print(f"[{self.name}] Inicializando advertiser com adapter={adapter}")
+            if BlueZAdvertiser is not None:
+                try:
+                    self.ble_advertiser = BlueZAdvertiser(self.nid, 0, adapter=adapter)
+                except Exception as e:
+                    print(f"[{self.name}] Aviso: Falha ao inicializar BlueZAdvertiser: {e}. Usando fallback BLEAdvertiser.")
+                    self.ble_advertiser = BLEAdvertiser(self.nid, 0)
+            else:
+                self.ble_advertiser = BLEAdvertiser(self.nid, 0)
+            # Tentar criar um GATT server para aceitar ligações/notifications
+            if BlueZGattServer is not None:
+                try:
+                    # on_write callback: parse incoming JSON bytes and forward
+                    def _on_gatt_write(data: bytes):
+                        try:
+                            import json
+                            message = json.loads(data.decode('utf-8'))
+                        except Exception:
+                            # If not JSON, wrap raw bytes
+                            message = {"raw": list(data)}
+                        # call process_incoming_message in event loop
+                        try:
+                            self.process_incoming_message(message, source_link_nid='BLE_GATT')
+                        except Exception:
+                            print(f"[{self.name}] Erro ao processar mensagem GATT escrita")
+
+                    self.ble_gatt_server = BlueZGattServer(on_write=_on_gatt_write, adapter=adapter)
+                except Exception as e:
+                    print(f"[{self.name}] Aviso: falha ao inicializar GATT server: {e}")
+                    self.ble_gatt_server = None
+            else:
+                self.ble_gatt_server = None
         
         print(f"[{self.name}] Inicializado. NID: {self.nid}")
 
@@ -126,6 +168,7 @@ class SinkHost:
         print(f"[{self.name}] Mensagem BLE recebida (handle: {sender_handle})")
         source_link_nid = message.get("source_nid", "UNKNOWN")
         self.process_incoming_message(message, source_link_nid)
+
                     
     def process_incoming_message(self, message: Dict, source_link_nid: str):
         """
@@ -186,6 +229,17 @@ class SinkHost:
         
         # Serializar e enviar via BLE para todos os Downlinks
         data = json.dumps(message).encode('utf-8')
+
+        # Preferir notificar via GATT server se estiver disponível (clientes inscritos)
+        if getattr(self, 'ble_gatt_server', None) is not None:
+            try:
+                await self.ble_gatt_server.notify_all(data)
+                print(f"[{self.name}][HB:{heartbeat_counter}] Notificado via GATT server.")
+                # We cannot know success_count easily here; report 1 as at least one subscriber
+                return 1
+            except Exception as e:
+                print(f"[{self.name}] Aviso: falha ao notificar via GATT server: {e}")
+
         success_count = await self.ble_manager.broadcast_to_downlinks(data)
         
         print(f"[{self.name}][HB:{heartbeat_counter}] Enviado para {success_count} Downlinks via BLE.")

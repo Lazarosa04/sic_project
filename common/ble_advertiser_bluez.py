@@ -53,6 +53,9 @@ def _dbus_prop(signature: str):
     # dbus-next >= 0.2.3 uses PropertyAccess enum.
     if PropertyAccess:
         # dbus_property takes (access, name=None, disabled=False).
+        # Use READ by default; individual properties can be made
+        # writable if a setter is implemented. This avoids requiring
+        # setters for every property and prevents ValueError on init.
         return dbus_property(PropertyAccess.READ)
 
     # Fallback for environments where PropertyAccess is not found,
@@ -118,6 +121,14 @@ class Advertisement(ServiceInterface):
     def Includes(self) -> 'as':
         # list of include flags accepted by BlueZ, e.g. ['tx-power']
         return []
+
+    @_dbus_prop('n')
+    def TxPower(self) -> 'n':
+        # Some BlueZ versions may emit or expect a TxPower property change.
+        # Provide a stable default (0 dBm). Returning an integer avoids
+        # dbus-next raising when it receives a PropertiesChanged
+        # containing 'TxPower'. This is benign and keeps compatibility.
+        return 0
 
     @_dbus_method()
     def Release(self):  # called by BlueZ when released
