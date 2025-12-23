@@ -15,6 +15,11 @@ from cryptography.x509 import load_pem_x509_certificate
 from common.heartbeat import verify_heartbeat, load_sink_keys, sign_heartbeat 
 from common.heartbeat import HEARTBEAT_PACING_SECONDS
 from common.ble_manager import BLEConnectionManager, BLEAdvertiser 
+# Prefer BlueZAdvertiser on Linux if available (BlueZ + dbus-next)
+try:
+    from common.ble_advertiser_bluez import BlueZAdvertiser
+except Exception:
+    BlueZAdvertiser = None
 
 # --- CORREÇÃO DE AMBIENTE: MOVIDA PARA O TOPO ---
 # Adiciona o diretório raiz ao caminho de pesquisa antes de qualquer outra importação local.
@@ -71,7 +76,16 @@ class IoTNode:
                 device_nid=self.nid,
                 on_message_received=self._on_ble_message_received
             )
-            self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
+            # Prefer a real BlueZ advertiser when available, otherwise use fallback
+            try:
+                if BlueZAdvertiser is not None:
+                    adapter = os.environ.get('SIC_BLE_ADAPTER', 'hci0')
+                    self.ble_advertiser = BlueZAdvertiser(self.nid, self.hop_count, adapter=adapter)
+                else:
+                    self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
+            except Exception as e:
+                print(f"[{self.name}] Aviso: Falha ao inicializar BlueZAdvertiser: {e}. Usando fallback BLEAdvertiser.")
+                self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
         
         print(f"[{self.name}] Inicializado. NID: {self.nid}, Hop Count: {self.hop_count}")
 
@@ -276,17 +290,22 @@ class IoTNode:
         if not self.nid: return b''
         return build_advertisement_data(self.nid, self.hop_count)
         
-    async def find_uplink_candidates(self, scan_duration: float = 5.0) -> Dict[str, int]:
-        """Realiza scanning BLE real para descobrir uplinks candidatos"""
-        print(f"[{self.name}] Iniciando Descoberta BLE de Uplink...")
+    async def find_uplink_candidates(self, scan_duration: float = 5.0, adapter: Optional[str] = None) -> Dict[str, int]:
+        """Realiza scanning BLE real para descobrir uplinks candidatos
+
+        Args:
+            scan_duration: duração do scan em segundos
+            adapter: opcional, HCI adapter a usar (ex: 'hci0')
+        """
+        print(f"[{self.name}] Iniciando Descoberta BLE de Uplink... (adapter={adapter})")
         
         if not self.ble_manager:
             print(f"[{self.name}] ERRO: BLE Manager não inicializado.")
             return {}
         
         try:
-            # Realizar scanning BLE real
-            candidates = await self.ble_manager.scan_for_uplinks(duration=scan_duration)
+            # Realizar scanning BLE real (pass-through do adapter quando fornecido)
+            candidates = await self.ble_manager.scan_for_uplinks(duration=scan_duration, adapter=adapter)
             return candidates
         except Exception as e:
             print(f"[{self.name}] ERRO no scanning BLE: {e}")
