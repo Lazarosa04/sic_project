@@ -93,17 +93,19 @@ class BLEConnectionManager:
             print(f"[BLE] Erro ao parsear Advertisement Data: {e}")
             return None
     
-    async def scan_for_uplinks(self, duration: float = 5.0) -> Dict[str, int]:
+    async def scan_for_uplinks(self, duration: float = 5.0, adapter: Optional[str] = None) -> Dict[str, int]:
         """
         Realiza scanning BLE para descobrir dispositivos vizinhos.
-        
+
         Args:
             duration: Duração do scan em segundos
-            
+            adapter: opcional, HCI adapter a usar (ex: 'hci0')
+
         Returns:
             Dicionário {NID: HopCount} dos dispositivos descobertos
         """
-        print(f"[BLE] Iniciando scanning por {duration}s...")
+        adapter_name = adapter if adapter else 'default'
+        print(f"[BLE] Iniciando scanning por {duration}s (adapter={adapter_name})...")
         self.discovered_devices.clear()
         
         def detection_callback(device: BLEDevice, advertisement_data: AdvertisementData):
@@ -120,10 +122,16 @@ class BLEConnectionManager:
                 # Armazenar ou atualizar dispositivo
                 if nid not in self.discovered_devices or hop_count < self.discovered_devices[nid][1]:
                     self.discovered_devices[nid] = (device, hop_count)
-                    print(f"[BLE] Descoberto: {nid[:8]}... (Hop: {hop_count}, RSSI: {advertisement_data.rssi})")
+                    print(f"[BLE][{adapter_name}] Descoberto: {nid[:8]}... (Hop: {hop_count}, RSSI: {advertisement_data.rssi})")
         
         # Iniciar scanning
-        scanner = BleakScanner(detection_callback=detection_callback)
+        # If an adapter is provided (e.g. 'hci1') pass it to BleakScanner so
+        # the scan happens on the selected HCI device. Bleak accepts an
+        # `adapter` keyword on Linux/backends that support it.
+        if adapter:
+            scanner = BleakScanner(detection_callback=detection_callback, adapter=adapter)
+        else:
+            scanner = BleakScanner(detection_callback=detection_callback)
         await scanner.start()
         await asyncio.sleep(duration)
         await scanner.stop()

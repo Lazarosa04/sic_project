@@ -5,6 +5,7 @@
 Teste rápido de funcionalidade BLE básica.
 """
 
+import argparse
 import os
 import sys
 import asyncio
@@ -14,7 +15,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 from common.ble_manager import BLEConnectionManager
 
 
-async def quick_scan():
+async def quick_scan(adapter: str, duration: float, device_nid: str):
     """Teste rápido de scanning BLE"""
     
     print("\n" + "="*60)
@@ -22,16 +23,16 @@ async def quick_scan():
     print("="*60 + "\n")
     
     # Criar manager de teste
-    test_nid = "00000000-0000-0000-0000-000000000001"
+    test_nid = device_nid
     manager = BLEConnectionManager(device_nid=test_nid)
-    
+
     print(f"[TESTE] BLE Manager criado para NID: {test_nid[:8]}...")
     print(f"[TESTE] Iniciando scanning por 3 segundos...")
     print(f"[INFO] Procurando dispositivos BLE nas proximidades...\n")
     
     try:
         # Scan curto
-        devices = await manager.scan_for_uplinks(duration=3.0)
+        devices = await manager.scan_for_uplinks(duration=duration, adapter=adapter)
         
         if devices:
             print(f"\n✅ SUCESSO! {len(devices)} dispositivo(s) encontrado(s):")
@@ -72,7 +73,13 @@ async def quick_scan():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Quick BLE scan test (accepts --adapter and --device-nid)')
+    parser.add_argument('--adapter', default=None, help='HCI adapter to use for scanning (e.g. hci0, hci1)')
+    parser.add_argument('--duration', type=float, default=3.0, help='Scan duration in seconds')
+    parser.add_argument('--device-nid', default='00000000-0000-0000-0000-000000000001', help='NID of this device (scanner) - used to ignore self adverts')
+    args = parser.parse_args()
+
     try:
-        asyncio.run(quick_scan())
+        asyncio.run(quick_scan(adapter=args.adapter, duration=args.duration, device_nid=args.device_nid))
     except KeyboardInterrupt:
         print("\n[INFO] Teste interrompido.")
