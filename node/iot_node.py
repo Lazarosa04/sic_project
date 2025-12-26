@@ -247,18 +247,19 @@ class IoTNode:
             
     def process_incoming_message(self, message: Dict, source_link_nid: str):
         source_nid = message.get("source_nid") 
-        destination_nid = message.get("destination_nid") 
 
-        if not source_nid or not destination_nid: return
-
-        # Handle registration messages from newly-connected centrals
+        # Handle registration messages from newly-connected centrals (needs only source_nid)
         if message.get("type") == "REGISTER":
-            # Add the sender to downlinks if not already present
-            if source_nid not in self.downlinks:
+            if source_nid and source_nid not in self.downlinks:
                 self.downlinks[source_nid] = True
-                print(f"[{self.name}] Novo Downlink registado: {source_nid[:8]}...")
-            # learn forwarding table entry back to this source via source_link_nid
-            self.update_forwarding_table(source_nid, source_link_nid)
+                print(f"[{self.name}] ✅ Novo Downlink registado: {source_nid[:8]}...")
+            if source_nid:
+                self.update_forwarding_table(source_nid, source_link_nid)
+            return
+
+        # For other messages, destination is required
+        destination_nid = message.get("destination_nid")
+        if not source_nid or not destination_nid: 
             return
 
         # Checagem de Heartbeat
@@ -268,8 +269,7 @@ class IoTNode:
 
         # Checagem de DTLS Inbox para Encaminhamento (NOVO)
         if message.get("type") == "DTLS_INBOX":
-            print(f"[{self.name}] Mensagem DTLS Inbox recebida. Encaminhando...")
-            # Não processamos aqui, apenas encaminhamos para o Sink.
+            pass  # Encaminhamos para o Sink
 
         # 1. Atualizar Tabela de Encaminhamento
         self.update_forwarding_table(source_nid, source_link_nid)

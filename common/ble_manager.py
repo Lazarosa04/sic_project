@@ -242,17 +242,19 @@ class BLEConnectionManager:
                                 pass
                             services = getattr(client, 'services', None)
                             if services:
-                                try:
-                                    c = services.get_characteristic(SIC_DATA_CHARACTERISTIC_UUID)
-                                    if c:
-                                        return c
-                                except Exception:
-                                    pass
+                                # Manual search first (avoid "Multiple Characteristics" errors)
                                 try:
                                     for s in services:
                                         for c in s.characteristics:
                                             if str(getattr(c, 'uuid', '')).lower() == SIC_DATA_CHARACTERISTIC_UUID.lower():
                                                 return c
+                                except Exception:
+                                    pass
+                                # Fallback to get_characteristic if manual search failed
+                                try:
+                                    c = services.get_characteristic(SIC_DATA_CHARACTERISTIC_UUID)
+                                    if c:
+                                        return c
                                 except Exception:
                                     pass
                         except Exception:
@@ -283,7 +285,12 @@ class BLEConnectionManager:
                                 await asyncio.sleep(write_delay)
                                 continue
 
-                            await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, reg, response=True)
+                            # Use the characteristic object directly to avoid "Multiple Characteristics" error
+                            try:
+                                await client.write_gatt_char(char, reg, response=True)
+                            except Exception as e:
+                                # Fallback: try with UUID string if object approach fails
+                                await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, reg, response=True)
                             print(f"[BLE] Registration message sent to {device.address} (attempt {w})")
                             registration_sent = True
                             break
@@ -393,7 +400,7 @@ class BLEConnectionManager:
 
             Some backends cache services late or expose duplicated services.
             This helper triggers discovery, then searches manually if
-            get_characteristic returns None.
+            get_characteristic returns None or raises on duplicates.
             """
             try:
                 try:
@@ -402,18 +409,19 @@ class BLEConnectionManager:
                     pass
                 services = getattr(client, 'services', None)
                 if services:
-                    try:
-                        found = services.get_characteristic(target_uuid)
-                        if found:
-                            return found
-                    except Exception:
-                        pass
-                    # Manual search fallback
+                    # Manual search first (avoid "Multiple Characteristics" errors)
                     try:
                         for s in services:
                             for c in s.characteristics:
                                 if str(getattr(c, 'uuid', '')).lower() == target_uuid.lower():
                                     return c
+                    except Exception:
+                        pass
+                    # Fallback to get_characteristic if manual search failed
+                    try:
+                        found = services.get_characteristic(target_uuid)
+                        if found:
+                            return found
                     except Exception:
                         pass
             except Exception:
@@ -450,11 +458,16 @@ class BLEConnectionManager:
                         await asyncio.sleep(delay)
                         continue
 
-                    # Characteristic exists, request notifications
-                    await client.start_notify(
-                        SIC_NOTIFY_CHARACTERISTIC_UUID,
-                        self._notification_handler
-                    )
+                    # Characteristic exists, request notifications using the object
+                    # (Avoid "Multiple Characteristics" error by using object instead of UUID string)
+                    try:
+                        await client.start_notify(notify_char, self._notification_handler)
+                    except Exception as e:
+                        # Fallback: try with UUID string if object approach fails
+                        await client.start_notify(
+                            SIC_NOTIFY_CHARACTERISTIC_UUID,
+                            self._notification_handler
+                        )
                     print(f"[BLE] Notificações ativadas para {client.address} (attempt {attempt})")
                     return True
                 except Exception as e:

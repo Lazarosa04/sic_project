@@ -41,12 +41,15 @@ logger = logging.getLogger(__name__)
 SIC_SERVICE_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64c"
 SIC_DATA_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64d"
 SIC_NOTIFY_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64e"
-def _dbus_prop(signature: str):
+def _dbus_prop(signature: str, access=None):
     """Return a dbus_property decorator compatible with installed dbus-next.
 
-    Uses PropertyAccess.READ when available and relies on the function's
-    return annotation (e.g., 's', 'o', 'as'). Falls back to plain
-    dbus_property() when PropertyAccess isn't present.
+    Uses PropertyAccess.READ by default, or specified access if provided.
+    Falls back to plain dbus_property() when PropertyAccess isn't present.
+    
+    Args:
+        signature: D-Bus signature (e.g., 's', 'o', 'as', 'ay')
+        access: Optional PropertyAccess (e.g., PropertyAccess.READ, PropertyAccess.READWRITE)
     """
     if MessageBus is None:
         def _noop(f):
@@ -55,7 +58,9 @@ def _dbus_prop(signature: str):
 
     try:
         if PropertyAccess is not None:
-            return dbus_property(PropertyAccess.READ)
+            if access is None:
+                access = PropertyAccess.READ
+            return dbus_property(access)
     except Exception:
         pass
     # Fallback for older/newer variants
@@ -89,6 +94,20 @@ class GattCharacteristic(ServiceInterface):
     @_dbus_prop('as')
     def Flags(self) -> 'as':
         return self.flags
+
+    @_dbus_prop('ay', access=PropertyAccess.READWRITE)
+    def Value(self) -> 'ay':
+        """Current value of the characteristic (read-write property for notifications)."""
+        return bytes(self._value)
+
+    @Value.setter
+    def Value(self, val: 'ay') -> None:
+        """Setter for Value property (called when central updates via properties)."""
+        try:
+            self._value = bytes(val)
+            logger.debug('Value updated via property setter to %d bytes', len(val))
+        except Exception:
+            logger.exception('Error in Value setter')
 
     @method()
     def ReadValue(self, options: 'a{sv}') -> 'ay':
