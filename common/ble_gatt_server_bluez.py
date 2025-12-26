@@ -172,10 +172,19 @@ class BlueZGattServer:
         print(f"[GATT DEBUG] Starting GATT server on adapter={self.adapter} app_path={self.app_path}")
         # Connect to system bus
         try:
+            print(f"[GATT DEBUG] Attempting to connect to system D-Bus (BusType.SYSTEM)")
             self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        except Exception:
-            # fallback
-            self.bus = await MessageBus().connect()
+            print(f"[GATT DEBUG] Connected to system D-Bus (system bus)")
+        except Exception as e_sys:
+            print(f"[GATT DEBUG] Failed to connect to system bus: {e_sys}. Falling back to default MessageBus().connect()")
+            try:
+                self.bus = await MessageBus().connect()
+                print(f"[GATT DEBUG] Connected to default MessageBus (session or auto)")
+            except Exception as e_fallback:
+                print(f"[GATT ERROR] Could not connect to D-Bus: {e_fallback}")
+                import traceback
+                traceback.print_exc()
+                raise
 
         # Create service and characteristics
         service = GattService(self.service_path, SIC_SERVICE_UUID)
@@ -203,19 +212,16 @@ class BlueZGattServer:
 
         # Register application with BlueZ GattManager1
         adapter_path = f'/org/bluez/{self.adapter}'
-        introspection = await self.bus.introspect('org.bluez', adapter_path)
-        manager = self.bus.get_proxy_object('org.bluez', adapter_path, introspection)
-        if asyncio.iscoroutine(manager):
-            manager = await manager
-        gatt_manager = manager.get_interface('org.bluez.GattManager1')
-
-        # Call RegisterApplication
         try:
-            await gatt_manager.call_register_application(self.app_path, {})
-            logger.info('GATT application registered at %s', self.app_path)
-            print(f"[GATT DEBUG] Registered GATT application at {self.app_path} with BlueZ GattManager1")
-        except Exception as e:
-            logger.exception('Failed to register GATT application: %s', e)
+            print(f"[GATT DEBUG] Introspecting org.bluez at {adapter_path}...")
+            introspection = await self.bus.introspect('org.bluez', adapter_path)
+            manager = self.bus.get_proxy_object('org.bluez', adapter_path, introspection)
+            if asyncio.iscoroutine(manager):
+                manager = await manager
+            gatt_manager = manager.get_interface('org.bluez.GattManager1')
+        except Exception as e_introspect:
+            print(f"[GATT ERROR] Failed to introspect org.bluez at {adapter_path}: {e_introspect}")
+            import traceback; traceback.print_exc()
             # Cleanup exported objects
             for p in self._exported_objects:
                 try:
@@ -223,6 +229,30 @@ class BlueZGattServer:
                 except Exception:
                     pass
             raise
+
+        # Call RegisterApplication with retry to handle transient BlueZ races
+        register_attempts = 3
+        for attempt in range(1, register_attempts + 1):
+            try:
+                print(f"[GATT DEBUG] Calling RegisterApplication (attempt {attempt}/{register_attempts})")
+                await gatt_manager.call_register_application(self.app_path, {})
+                logger.info('GATT application registered at %s', self.app_path)
+                print(f"[GATT DEBUG] Registered GATT application at {self.app_path} with BlueZ GattManager1")
+                break
+            except Exception as e:
+                print(f"[GATT ERROR] RegisterApplication attempt {attempt} failed: {e}")
+                import traceback; traceback.print_exc()
+                if attempt >= register_attempts:
+                    # Cleanup exported objects
+                    for p in self._exported_objects:
+                        try:
+                            self.bus.unexport(p)
+                        except Exception:
+                            pass
+                    raise
+                else:
+                    # brief backoff before retrying
+                    await asyncio.sleep(0.5)
 
     def _on_subscribe(self, char: GattCharacteristic) -> None:
         """Called when a central subscribes (StartNotify) to a notify characteristic."""

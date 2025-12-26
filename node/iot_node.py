@@ -44,7 +44,7 @@ class IoTNode:
     Representa um dispositivo IoT (sensor/roteador) no projeto SIC.
     Contém a lógica de identidade, estado de rede, roteamento e liveness.
     """
-    def __init__(self, name: str, is_sink: bool = False):
+    def __init__(self, name: str, is_sink: bool = False, adapter: Optional[str] = None):
         self.name = name
         self.is_sink = is_sink
         
@@ -69,18 +69,21 @@ class IoTNode:
         # 4. BLE MANAGER (Conexões BLE reais)
         self.ble_manager: Optional[BLEConnectionManager] = None
         self.ble_advertiser: Optional[BLEAdvertiser] = None
+        # Adapter used for BLE operations (hci0, hci1, etc.)
+        # If not provided, fall back to environment variable `SIC_BLE_ADAPTER` or 'hci0'.
+        self.adapter = adapter or os.environ.get('SIC_BLE_ADAPTER', 'hci0')
         
         # Inicializar BLE Manager se NID estiver disponível
         if self.nid:
             self.ble_manager = BLEConnectionManager(
                 device_nid=self.nid,
-                on_message_received=self._on_ble_message_received
+                on_message_received=self._on_ble_message_received,
+                adapter=self.adapter
             )
             # Prefer a real BlueZ advertiser when available, otherwise use fallback
             try:
                 if BlueZAdvertiser is not None:
-                    adapter = os.environ.get('SIC_BLE_ADAPTER', 'hci0')
-                    self.ble_advertiser = BlueZAdvertiser(self.nid, self.hop_count, adapter=adapter)
+                    self.ble_advertiser = BlueZAdvertiser(self.nid, self.hop_count, adapter=self.adapter)
                 else:
                     self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
             except Exception as e:
@@ -249,6 +252,16 @@ class IoTNode:
         destination_nid = message.get("destination_nid") 
 
         if not source_nid or not destination_nid: return
+
+        # Handle registration messages from newly-connected centrals
+        if message.get("type") == "REGISTER":
+            # Add the sender to downlinks if not already present
+            if source_nid not in self.downlinks:
+                self.downlinks[source_nid] = True
+                print(f"[{self.name}] Novo Downlink registado: {source_nid[:8]}...")
+            # learn forwarding table entry back to this source via source_link_nid
+            self.update_forwarding_table(source_nid, source_link_nid)
+            return
 
         # Checagem de Heartbeat
         if message.get("is_heartbeat", False):

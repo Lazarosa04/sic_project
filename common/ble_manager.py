@@ -28,7 +28,7 @@ class BLEConnectionManager:
     Suporta scanning, conexão, envio/recebimento de mensagens e desconexão.
     """
     
-    def __init__(self, device_nid: str, on_message_received: Optional[Callable] = None):
+    def __init__(self, device_nid: str, on_message_received: Optional[Callable] = None, adapter: Optional[str] = None):
         """
         Inicializa o gerenciador BLE.
         
@@ -49,6 +49,8 @@ class BLEConnectionManager:
         # Scanning
         self.scanner: Optional[BleakScanner] = None
         self.discovered_devices: Dict[str, Tuple[BLEDevice, int]] = {}  # NID -> (Device, HopCount)
+        # Preferred HCI adapter for scanning/connecting (e.g. 'hci0')
+        self.adapter = adapter
         
         print(f"[BLE] Manager inicializado para {device_nid[:8]}...")
     
@@ -104,40 +106,54 @@ class BLEConnectionManager:
         Returns:
             Dicionário {NID: HopCount} dos dispositivos descobertos
         """
-        adapter_name = adapter if adapter else 'default'
+        # Determine adapter: explicit arg > instance adapter > default
+        use_adapter = adapter or self.adapter
+        adapter_name = use_adapter if use_adapter else 'default'
         print(f"[BLE] Iniciando scanning por {duration}s (adapter={adapter_name})...")
         self.discovered_devices.clear()
-        
+
         def detection_callback(device: BLEDevice, advertisement_data: AdvertisementData):
             """Callback chamado para cada dispositivo descoberto"""
             parsed = self._parse_advertisement_data(advertisement_data)
-            
+
             if parsed:
                 nid, hop_count = parsed
-                
+
                 # Ignorar a si próprio
                 if nid == self.device_nid:
                     return
-                
+
                 # Armazenar ou atualizar dispositivo
                 if nid not in self.discovered_devices or hop_count < self.discovered_devices[nid][1]:
                     self.discovered_devices[nid] = (device, hop_count)
                     print(f"[BLE][{adapter_name}] Descoberto: {nid[:8]}... (Hop: {hop_count}, RSSI: {advertisement_data.rssi})")
-        
+
         # Iniciar scanning
         # If an adapter is provided (e.g. 'hci1') pass it to BleakScanner so
         # the scan happens on the selected HCI device. Bleak accepts an
         # `adapter` keyword on Linux/backends that support it.
-        if adapter:
-            scanner = BleakScanner(detection_callback=detection_callback, adapter=adapter)
+        if use_adapter:
+            scanner = BleakScanner(detection_callback=detection_callback, adapter=use_adapter)
         else:
             scanner = BleakScanner(detection_callback=detection_callback)
+
+        # Start scanner and run a short-loop to ensure we collect discoveries
+        # for the full requested duration (some backends may deliver events
+        # only while the loop yields). This also avoids any accidental early
+        # return when the first device is discovered.
         await scanner.start()
-        await asyncio.sleep(duration)
-        await scanner.stop()
-        
+        try:
+            # loop in small increments so the event loop keeps processing
+            remaining = duration
+            interval = 0.5
+            while remaining > 0:
+                await asyncio.sleep(min(interval, remaining))
+                remaining -= interval
+        finally:
+            await scanner.stop()
+
         print(f"[BLE] Scanning completo. {len(self.discovered_devices)} dispositivos encontrados.")
-        
+
         # Retornar apenas NID -> HopCount
         return {nid: hop for nid, (dev, hop) in self.discovered_devices.items()}
     
@@ -173,7 +189,13 @@ class BLEConnectionManager:
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
-                client = BleakClient(device.address, disconnected_callback=self._on_disconnect)
+                # Pass the BLEDevice object where supported to avoid address
+                # resolution issues on some backends.
+                try:
+                    client = BleakClient(device, disconnected_callback=self._on_disconnect)
+                except Exception:
+                    # Fallback to address string if BLEDevice not accepted
+                    client = BleakClient(device.address, disconnected_callback=self._on_disconnect)
                 await client.connect(timeout=10.0)
 
                 if not client.is_connected:
@@ -184,9 +206,79 @@ class BLEConnectionManager:
                 self.uplink_address = device.address
 
                 print(f"[BLE] ✅ Conectado a {target_nid[:8]}... (Uplink estabelecido)")
+                # Small delay to avoid race where services aren't ready yet on
+                # some backends. Then trigger explicit service discovery.
+                try:
+                    await asyncio.sleep(0.25)
+                except Exception:
+                    pass
 
-                # Subscrever notificações
+                try:
+                    # get_services triggers service discovery in bleak
+                    await client.get_services()
+                except Exception:
+                    # Not critical; continue and rely on subscribe/write retries
+                    pass
+
+                # Subscrever notificações (this has internal retries)
                 await self._subscribe_notifications(client)
+
+                # After subscribing, send a small registration message so the
+                # peripheral (server) can learn our NID and register us as a
+                # downlink. Retry a few times in case the write characteristic
+                # is not yet available immediately after connect.
+                try:
+                    import json
+                    reg = json.dumps({"type": "REGISTER", "source_nid": self.device_nid}).encode('utf-8')
+                    write_attempts = 4
+                    write_delay = 0.5
+                    for w in range(1, write_attempts + 1):
+                        try:
+                            # Ensure write characteristic exists before attempting
+                            char_ok = False
+                            try:
+                                services = client.services
+                                if services and services.get_characteristic(SIC_DATA_CHARACTERISTIC_UUID):
+                                    char_ok = True
+                            except Exception:
+                                char_ok = False
+
+                            if not char_ok:
+                                # trigger discovery and retry
+                                try:
+                                    await client.get_services()
+                                except Exception:
+                                    pass
+                                    # Helpful debug output: list discovered services/characteristics
+                                    try:
+                                        svcs = client.services
+                                        if svcs:
+                                            print(f"[BLE DEBUG] Discovered services for {device.address}:")
+                                            for s in svcs:
+                                                try:
+                                                    print(f"  - Service: {s.uuid}")
+                                                    for c in s.characteristics:
+                                                        print(f"      * Char: {c.uuid} flags={getattr(c, 'properties', getattr(c, 'flags', None))}")
+                                                except Exception:
+                                                    pass
+                                    except Exception:
+                                        pass
+                                if w >= write_attempts:
+                                    raise RuntimeError(f"Write characteristic {SIC_DATA_CHARACTERISTIC_UUID} not found")
+                                print(f"[BLE] Aviso: write characteristic não encontrada ainda. Tentativa {w}/{write_attempts}. Retrying in {write_delay}s")
+                                await asyncio.sleep(write_delay)
+                                continue
+
+                            await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, reg, response=True)
+                            print(f"[BLE] Registration message sent to {device.address} (attempt {w})")
+                            break
+                        except Exception as we:
+                            if w >= write_attempts:
+                                raise
+                            print(f"[BLE] Aviso: tentativa {w} falhou ao enviar registo: {we}. Retrying in {write_delay}s")
+                            await asyncio.sleep(write_delay)
+                except Exception as e:
+                    print(f"[BLE] Aviso: falha ao enviar registo para {device.address}: {e}")
 
                 return True
 
@@ -267,11 +359,69 @@ class BLEConnectionManager:
     async def _subscribe_notifications(self, client: BleakClient):
         """Subscreve à característica de notificações para receber mensagens"""
         try:
-            await client.start_notify(
-                SIC_NOTIFY_CHARACTERISTIC_UUID,
-                self._notification_handler
-            )
-            print(f"[BLE] Notificações ativadas para {client.address}")
+            # Some peripherals may take a short time to register GATT
+            # services after the connection is established. Retry a few
+            # times to allow service discovery to complete.
+            max_attempts = 8
+            delay = 0.5
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    # Ensure service discovery populated client.services
+                    services = None
+                    try:
+                        services = client.services
+                    except Exception:
+                        services = None
+
+                    char_present = False
+                    try:
+                        if services:
+                            # Bleak provides get_characteristic on the services
+                            c = services.get_characteristic(SIC_NOTIFY_CHARACTERISTIC_UUID)
+                            if c is not None:
+                                char_present = True
+                    except Exception:
+                        char_present = False
+
+                    if not char_present:
+                        # try to trigger discovery if available
+                        try:
+                            await client.get_services()
+                        except Exception:
+                            pass
+                        if attempt >= max_attempts:
+                            raise RuntimeError(f"Notify characteristic {SIC_NOTIFY_CHARACTERISTIC_UUID} not found")
+                            print(f"[BLE] Aviso: notify characteristic não encontrada ainda. Tentativa {attempt}/{max_attempts}. Retrying in {delay}s")
+                            # Debug: list available services/characteristics to help debugging
+                            try:
+                                svcs = client.services
+                                if svcs:
+                                    print(f"[BLE DEBUG] Discovered services for {client.address} (notify retry):")
+                                    for s in svcs:
+                                        try:
+                                            print(f"  - Service: {s.uuid}")
+                                            for c in s.characteristics:
+                                                print(f"      * Char: {c.uuid} flags={getattr(c, 'properties', getattr(c, 'flags', None))}")
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Characteristic exists, request notifications
+                    await client.start_notify(
+                        SIC_NOTIFY_CHARACTERISTIC_UUID,
+                        self._notification_handler
+                    )
+                    print(f"[BLE] Notificações ativadas para {client.address} (attempt {attempt})")
+                    break
+                except Exception as e:
+                    if attempt >= max_attempts:
+                        raise
+                    else:
+                        print(f"[BLE] Aviso: tentativa {attempt} falhou ao ativar notificações: {e}. Retrying in {delay}s")
+                        await asyncio.sleep(delay)
         except Exception as e:
             print(f"[BLE] AVISO: Não foi possível ativar notificações: {e}")
     

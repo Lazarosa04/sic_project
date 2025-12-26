@@ -163,21 +163,26 @@ class BlueZAdvertiser:
             logger.debug('Advertisement already registered')
             return
 
-        # Connect to the system bus. Different dbus-next versions accept
-        # different constructors/parameters; try a few patterns for
-        # compatibility with older/newer releases.
+        # Connect to the D-Bus system bus (BlueZ registers on the system bus).
+        # Try to prefer an explicit system bus connection, with a safe
+        # fallback to the default constructor if BusType is unavailable
+        # for compatibility with older dbus-next versions.
         self.bus = None
         try:
-            # Preferred: default ctor and connect()
-            self.bus = await MessageBus().connect()
-        except Exception:
             try:
-                # Fallback: explicit system bus type if available
                 from dbus_next import BusType
+            except Exception:
+                BusType = None  # type: ignore
+
+            if BusType is not None:
+                # Explicitly ask for the system bus where org.bluez is available.
                 self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            except Exception as e:
-                logger.exception('Failed to connect to D-Bus system bus: %s', e)
-                raise
+            else:
+                # Fall back to default constructor if BusType is not present.
+                self.bus = await MessageBus().connect()
+        except Exception as e:
+            logger.exception('Failed to connect to D-Bus system bus: %s', e)
+            raise
 
         # Find adapter path (simple heuristic)
         adapter_path = f'/org/bluez/{self.adapter}'
