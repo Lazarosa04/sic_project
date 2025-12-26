@@ -221,48 +221,62 @@ class BLEConnectionManager:
                     pass
 
                 # Subscrever notificações (this has internal retries)
-                await self._subscribe_notifications(client)
+                notify_ok = await self._subscribe_notifications(client)
 
                 # After subscribing, send a small registration message so the
                 # peripheral (server) can learn our NID and register us as a
                 # downlink. Retry a few times in case the write characteristic
                 # is not yet available immediately after connect.
+                registration_sent = False
                 try:
                     import json
                     reg = json.dumps({"type": "REGISTER", "source_nid": self.device_nid}).encode('utf-8')
                     write_attempts = 4
                     write_delay = 0.5
-                    for w in range(1, write_attempts + 1):
-                        try:
-                            # Ensure write characteristic exists before attempting
-                            char_ok = False
-                            try:
-                                services = client.services
-                                if services and services.get_characteristic(SIC_DATA_CHARACTERISTIC_UUID):
-                                    char_ok = True
-                            except Exception:
-                                char_ok = False
 
-                            if not char_ok:
-                                # trigger discovery and retry
+                    async def _find_write_char():
+                        try:
+                            try:
+                                await client.get_services()
+                            except Exception:
+                                pass
+                            services = getattr(client, 'services', None)
+                            if services:
                                 try:
-                                    await client.get_services()
+                                    c = services.get_characteristic(SIC_DATA_CHARACTERISTIC_UUID)
+                                    if c:
+                                        return c
                                 except Exception:
                                     pass
-                                    # Helpful debug output: list discovered services/characteristics
-                                    try:
-                                        svcs = client.services
-                                        if svcs:
-                                            print(f"[BLE DEBUG] Discovered services for {device.address}:")
-                                            for s in svcs:
-                                                try:
-                                                    print(f"  - Service: {s.uuid}")
-                                                    for c in s.characteristics:
-                                                        print(f"      * Char: {c.uuid} flags={getattr(c, 'properties', getattr(c, 'flags', None))}")
-                                                except Exception:
-                                                    pass
-                                    except Exception:
-                                        pass
+                                try:
+                                    for s in services:
+                                        for c in s.characteristics:
+                                            if str(getattr(c, 'uuid', '')).lower() == SIC_DATA_CHARACTERISTIC_UUID.lower():
+                                                return c
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        return None
+
+                    for w in range(1, write_attempts + 1):
+                        try:
+                            char = await _find_write_char()
+                            if not char:
+                                # Helpful debug output: list discovered services/characteristics
+                                try:
+                                    svcs = getattr(client, 'services', None)
+                                    if svcs:
+                                        print(f"[BLE DEBUG] Discovered services for {device.address}:")
+                                        for s in svcs:
+                                            try:
+                                                print(f"  - Service: {s.uuid}")
+                                                for c in s.characteristics:
+                                                    print(f"      * Char: {c.uuid} flags={getattr(c, 'properties', getattr(c, 'flags', None))}")
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
                                 if w >= write_attempts:
                                     raise RuntimeError(f"Write characteristic {SIC_DATA_CHARACTERISTIC_UUID} not found")
                                 print(f"[BLE] Aviso: write characteristic não encontrada ainda. Tentativa {w}/{write_attempts}. Retrying in {write_delay}s")
@@ -271,6 +285,7 @@ class BLEConnectionManager:
 
                             await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, reg, response=True)
                             print(f"[BLE] Registration message sent to {device.address} (attempt {w})")
+                            registration_sent = True
                             break
                         except Exception as we:
                             if w >= write_attempts:
@@ -279,8 +294,20 @@ class BLEConnectionManager:
                             await asyncio.sleep(write_delay)
                 except Exception as e:
                     print(f"[BLE] Aviso: falha ao enviar registo para {device.address}: {e}")
-
-                return True
+                # Consider connection successful only if notifications were enabled
+                # and registration was sent (ensures SIC service is present).
+                if notify_ok and registration_sent:
+                    return True
+                else:
+                    print(f"[BLE] ERRO: Conexão estabelecida, mas serviço SIC indisponível (notify_ok={notify_ok}, registration_sent={registration_sent}).")
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                    self.uplink_client = None
+                    self.uplink_address = None
+                    # Continue to retry in outer loop
+                    raise RuntimeError('SIC GATT service not available on target')
 
             except Exception as e:
                 # Specific Bleak backends may report 'Device with address X was not found.'
@@ -356,8 +383,43 @@ class BLEConnectionManager:
                 del self.downlink_clients[nid]
                 break
     
-    async def _subscribe_notifications(self, client: BleakClient):
-        """Subscreve à característica de notificações para receber mensagens"""
+    async def _subscribe_notifications(self, client: BleakClient) -> bool:
+        """Subscreve à característica de notificações para receber mensagens.
+        Retorna True se as notificações foram ativadas com sucesso, caso contrário False.
+        """
+
+        async def _find_char(target_uuid: str):
+            """Best-effort characteristic lookup tolerant to backend quirks.
+
+            Some backends cache services late or expose duplicated services.
+            This helper triggers discovery, then searches manually if
+            get_characteristic returns None.
+            """
+            try:
+                try:
+                    await client.get_services()
+                except Exception:
+                    pass
+                services = getattr(client, 'services', None)
+                if services:
+                    try:
+                        found = services.get_characteristic(target_uuid)
+                        if found:
+                            return found
+                    except Exception:
+                        pass
+                    # Manual search fallback
+                    try:
+                        for s in services:
+                            for c in s.characteristics:
+                                if str(getattr(c, 'uuid', '')).lower() == target_uuid.lower():
+                                    return c
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            return None
+
         try:
             # Some peripherals may take a short time to register GATT
             # services after the connection is established. Retry a few
@@ -366,37 +428,14 @@ class BLEConnectionManager:
             delay = 0.5
             for attempt in range(1, max_attempts + 1):
                 try:
-                    # Ensure service discovery populated client.services
-                    services = None
-                    try:
-                        services = client.services
-                    except Exception:
-                        services = None
-
-                    char_present = False
-                    try:
-                        if services:
-                            # Bleak provides get_characteristic on the services
-                            c = services.get_characteristic(SIC_NOTIFY_CHARACTERISTIC_UUID)
-                            if c is not None:
-                                char_present = True
-                    except Exception:
-                        char_present = False
-
-                    if not char_present:
-                        # try to trigger discovery if available
-                        try:
-                            await client.get_services()
-                        except Exception:
-                            pass
+                    notify_char = await _find_char(SIC_NOTIFY_CHARACTERISTIC_UUID)
+                    if not notify_char:
                         if attempt >= max_attempts:
-                            raise RuntimeError(f"Notify characteristic {SIC_NOTIFY_CHARACTERISTIC_UUID} not found")
-                            print(f"[BLE] Aviso: notify characteristic não encontrada ainda. Tentativa {attempt}/{max_attempts}. Retrying in {delay}s")
-                            # Debug: list available services/characteristics to help debugging
+                            # Before failing, dump discovered services/characteristics for diagnostics
                             try:
-                                svcs = client.services
+                                svcs = getattr(client, 'services', None)
                                 if svcs:
-                                    print(f"[BLE DEBUG] Discovered services for {client.address} (notify retry):")
+                                    print(f"[BLE DEBUG] Discovered services for {client.address} (notify final attempt):")
                                     for s in svcs:
                                         try:
                                             print(f"  - Service: {s.uuid}")
@@ -406,6 +445,8 @@ class BLEConnectionManager:
                                             pass
                             except Exception:
                                 pass
+                            raise RuntimeError(f"Notify characteristic {SIC_NOTIFY_CHARACTERISTIC_UUID} not found")
+                        print(f"[BLE] Aviso: notify characteristic não encontrada ainda. Tentativa {attempt}/{max_attempts}. Retrying in {delay}s")
                         await asyncio.sleep(delay)
                         continue
 
@@ -415,7 +456,7 @@ class BLEConnectionManager:
                         self._notification_handler
                     )
                     print(f"[BLE] Notificações ativadas para {client.address} (attempt {attempt})")
-                    break
+                    return True
                 except Exception as e:
                     if attempt >= max_attempts:
                         raise
@@ -424,11 +465,11 @@ class BLEConnectionManager:
                         await asyncio.sleep(delay)
         except Exception as e:
             print(f"[BLE] AVISO: Não foi possível ativar notificações: {e}")
+            return False
+        return False
     
     def _notification_handler(self, sender: int, data: bytes):
         """Handler chamado quando uma notificação BLE é recebida"""
-        print(f"[BLE] Mensagem recebida ({len(data)} bytes)")
-        
         if self.on_message_received:
             try:
                 # Converter bytes para mensagem (assumindo JSON serializado)

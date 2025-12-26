@@ -47,6 +47,7 @@ class IoTNode:
     def __init__(self, name: str, is_sink: bool = False, adapter: Optional[str] = None):
         self.name = name
         self.is_sink = is_sink
+        self._debug_mode = False  # Toggle for BLE message logging
         
         # 1. IDENTIDADE
         self.nid: Optional[str] = None
@@ -127,10 +128,12 @@ class IoTNode:
     
     def _on_ble_message_received(self, message: Dict, sender_handle: int):
         """Callback chamado quando uma mensagem BLE é recebida"""
-        print(f"[{self.name}] Mensagem BLE recebida (handle: {sender_handle})")
-        
         # Determinar o NID do sender (assumindo que vem na mensagem)
         source_link_nid = message.get("source_nid", "UNKNOWN")
+        
+        if self._debug_mode:
+            source_short = source_link_nid[:8] if source_link_nid != "UNKNOWN" else "UNKNOWN"
+            print(f"[{self.name}] Mensagem BLE recebida de {source_short}... (handle: {sender_handle})")
         
         # Processar mensagem através da lógica de roteamento existente
         self.process_incoming_message(message, source_link_nid)
@@ -195,10 +198,8 @@ class IoTNode:
             
             if is_valid:
                 self.lost_heartbeats = 0
-                counter = heartbeat_msg["heartbeat_data"]["counter"]
-                print(f"[{self.name}][HB:{counter}] Recebido. Assinatura VÁLIDA. Contadores resetados.")
             else:
-                print(f"[{self.name}][HB] Recebido. Assinatura INVÁLIDA! (Ataque?) Descartando.")
+                pass  # Invalid signature, will be tracked in check_liveness
 
     async def check_liveness(self):
         """ Verifica se o Uplink falhou (Heartbeat Perdido). """
@@ -207,10 +208,8 @@ class IoTNode:
         self.lost_heartbeats += 1
         
         if self.lost_heartbeats > MAX_LOST_HEARTBEATS:
-            print(f"[{self.name}] 🚨 LIMITE DE PERDAS ATINGIDO ({self.lost_heartbeats})!")
+            print(f"[{self.name}] ⚠️ Heartbeat perdido {self.lost_heartbeats}x. Desconectando...")
             await self.disconnect_uplink()
-        else:
-            print(f"[{self.name}] Heartbeat perdido. Total perdido: {self.lost_heartbeats} / {MAX_LOST_HEARTBEATS}.")
 
     async def disconnect_uplink(self):
         """ Rotina de desconexão (Secção 3): quebra Uplink, Downlinks, e reseta estado. """
@@ -225,7 +224,6 @@ class IoTNode:
         # Desconectar e limpar Downlinks
         downlink_nids = list(self.downlinks.keys())
         for nid in downlink_nids:
-            print(f"[{self.name}] Quebrando Downlink para {nid[:8]}...")
             if self.ble_manager:
                 await self.ble_manager.disconnect_downlink(nid)
             del self.downlinks[nid]
@@ -239,7 +237,7 @@ class IoTNode:
         if self.ble_advertiser:
             self.ble_advertiser.update_hop_count(DISCONNECTED_HOP_COUNT)
         
-        print(f"[{self.name}] Estado Resetado. INICIAR REENTRADA NA REDE (SCANNING)!")
+        print(f"[{self.name}] 🚨 Uplink desconectado. Reiniciando...")
         
     # --- Funções de Roteamento ---
     
@@ -275,28 +273,21 @@ class IoTNode:
 
         # 1. Atualizar Tabela de Encaminhamento
         self.update_forwarding_table(source_nid, source_link_nid)
-        print(f"[{self.name}] FT Aprendida: Responder a {source_nid[:8]}... via {source_link_nid[:8]}...")
         
         # 2. Decisão de Roteamento (Existente e Correta)
         if destination_nid == self.nid:
-            print(f"[{self.name}] **MENSAGEM LOCAL!** Recebida de {source_nid[:8]}...")
             return
 
         # A) Roteamento UPSTREAM (Em direção ao Sink)
         if destination_nid == self.uplink_nid: 
             if source_link_nid != self.uplink_nid: 
-                print(f"[{self.name}] Roteando UPSTREAM ({source_nid[:8]} -> SINK): Próx. Salto: {self.uplink_nid[:8]}...")
                 self.messages_routed_uplink += 1 
             return
             
         # B) Roteamento DOWNSTREAM (Pesquisa na FT)
         if destination_nid in self.forwarding_table:
             next_hop = self.forwarding_table[destination_nid]
-            print(f"[{self.name}] Roteando DOWNSTREAM ({source_nid[:8]} -> {destination_nid[:8]}): Próx. Salto: {next_hop[:8]}...")
             return
-            
-        else:
-            print(f"[{self.name}] ERRO: Destino {destination_nid[:8]}... desconhecido! (Descartando)")
             
     # --- Funções de Publicidade e Descoberta (Mantidas) ---
     def calculate_advertisement_data(self) -> bytes:
@@ -327,8 +318,15 @@ class IoTNode:
             return {SINK_NID_STR: 0, NODE_B_NID_STR: 1}
 
     def choose_uplink(self, candidates: Dict[str, int]) -> Optional[str]:
-        if not candidates: return None
-        best_candidate_nid = min(candidates, key=candidates.get)
+        if not candidates:
+            return None
+        # Ignore invalid/disconnected hop counts (< 0)
+        valid = {nid: hop for nid, hop in candidates.items() if hop is not None and hop >= 0}
+        if not valid:
+            print(f"[{self.name}] Nenhum candidato válido (hop>=0).")
+            return None
+        # Choose the lowest hop count among valid candidates
+        best_candidate_nid = min(valid, key=valid.get)
         return best_candidate_nid
     
     async def connect_to_uplink(self, uplink_nid: str) -> bool:

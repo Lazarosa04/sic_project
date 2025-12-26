@@ -60,9 +60,7 @@ class SinkApplication(IoTNode):
                     except Exception:
                         print(f"[{self.name}] Erro ao processar mensagem GATT escrita")
 
-                print(f"[{self.name}] Tentando inicializar BlueZGattServer (adapter={adapter})")
                 self.ble_gatt_server = BlueZGattServer(on_write=_on_gatt_write, adapter=adapter)
-                print(f"[{self.name}] BlueZGattServer instanciado: {self.ble_gatt_server}")
             except Exception as e:
                 print(f"[{self.name}] Aviso: falha ao inicializar GATT server: {e}")
                 self.ble_gatt_server = None
@@ -102,24 +100,18 @@ class SinkApplication(IoTNode):
         # Preferir notificar via GATT server (centrals inscritos)
         if getattr(self, 'ble_gatt_server', None) is not None:
             try:
-                print(f"[{self.name}] [DEBUG] Notificando via GATT server; payload_len={len(data)} bytes payload_hex={data.hex()[:200]}")
                 await self.ble_gatt_server.notify_all(data)
                 sub_count = getattr(self.ble_gatt_server, 'get_subscriber_count', lambda: 0)()
-                print(f"[{self.name}] [DEBUG] GATT notify attempted; subscriber_count={sub_count}")
                 if sub_count > 0:
-                    print(f"[{self.name}][HB:{self.heartbeat_counter}] Notificado via GATT server (subscribers={sub_count}).")
+                    print(f"[{self.name}][HB:{self.heartbeat_counter}] Enviado via GATT server (subscribers={sub_count}).")
                     return
-                else:
-                    print(f"[{self.name}][HB:{self.heartbeat_counter}] GATT server ativo, mas sem subscribers (subscribers=0). Checando downlinks BLE...")
-            except Exception as e:
-                print(f"[{self.name}] Aviso: falha ao notificar via GATT server: {e}")
-                import traceback; traceback.print_exc()
+            except Exception:
+                pass
 
 
         downlink_count = self.ble_manager.get_downlink_count() if self.ble_manager else 0
 
         if downlink_count == 0:
-            print(f"[{self.name}][HB:{self.heartbeat_counter}] Nenhum Downlink conectado. Aguardando conexões...")
             return
         
         # Estrutura da mensagem de rede

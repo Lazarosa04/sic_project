@@ -37,6 +37,7 @@ except Exception:
 async def interactive_loop(node: IoTNode):
     """Run a simple asyncio-friendly interactive prompt."""
     scan_results: Dict[str, int] = {}
+    debug_mode = False  # Toggle for BLE message logging
 
     async def run_input(prompt: str) -> str:
         # run blocking input in a thread to avoid blocking the event loop
@@ -62,7 +63,25 @@ async def interactive_loop(node: IoTNode):
             break
 
         if cmd == 'help':
-            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, send_inbox <nid> <json>, quit")
+            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, debug [on|off], send_inbox <nid> <json>, quit")
+            continue
+
+        if cmd == 'debug':
+            if len(parts) > 1:
+                arg = parts[1].lower()
+                if arg in ('on', '1', 'true'):
+                    debug_mode = True
+                    print('Debug mode: ON (BLE messages will be logged)')
+                elif arg in ('off', '0', 'false'):
+                    debug_mode = False
+                    print('Debug mode: OFF (BLE messages silent)')
+                else:
+                    print(f'Debug mode is currently: {"ON" if debug_mode else "OFF"}')
+            else:
+                debug_mode = not debug_mode
+                print(f'Debug mode toggled: {"ON" if debug_mode else "OFF"}')
+            # Store debug mode in node for use by callbacks
+            node._debug_mode = debug_mode
             continue
 
         if cmd == 'scan':

@@ -25,13 +25,14 @@ from typing import Optional, Callable, Dict
 
 try:
     from dbus_next.aio import MessageBus
-    from dbus_next.service import ServiceInterface, dbus_property, method, signal
+    from dbus_next.service import ServiceInterface, dbus_property, method, signal, PropertyAccess
     from dbus_next import Variant, BusType
 except Exception as e:
     MessageBus = None  # type: ignore
     ServiceInterface = object  # type: ignore
     Variant = None  # type: ignore
     BusType = None
+    PropertyAccess = None  # type: ignore
     dbus_next_import_error = e
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,26 @@ logger = logging.getLogger(__name__)
 SIC_SERVICE_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64c"
 SIC_DATA_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64d"
 SIC_NOTIFY_CHARACTERISTIC_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64e"
+def _dbus_prop(signature: str):
+    """Return a dbus_property decorator compatible with installed dbus-next.
+
+    Uses PropertyAccess.READ when available and relies on the function's
+    return annotation (e.g., 's', 'o', 'as'). Falls back to plain
+    dbus_property() when PropertyAccess isn't present.
+    """
+    if MessageBus is None:
+        def _noop(f):
+            return f
+        return _noop
+
+    try:
+        if PropertyAccess is not None:
+            return dbus_property(PropertyAccess.READ)
+    except Exception:
+        pass
+    # Fallback for older/newer variants
+    return dbus_property()
+
 
 
 class GattCharacteristic(ServiceInterface):
@@ -56,16 +77,16 @@ class GattCharacteristic(ServiceInterface):
         # server reference will be attached by the creator if needed
         self._server = None
 
-    @dbus_property(signature='s')
+    @_dbus_prop('s')
     def UUID(self) -> 's':
         return self.uuid
 
-    @dbus_property(signature='o')
+    @_dbus_prop('o')
     def Service(self) -> 'o':
         # filled by the server when exporting
-        return self._service_path
+        return getattr(self, '_service_path', '/')
 
-    @dbus_property(signature='as')
+    @_dbus_prop('as')
     def Flags(self) -> 'as':
         return self.flags
 
@@ -80,7 +101,7 @@ class GattCharacteristic(ServiceInterface):
         return bytes(self._value)
 
     @method()
-    def WriteValue(self, value: 'ay', options: 'a{sv}') -> None:
+    def WriteValue(self, value: 'ay', options: 'a{sv}'):
         # value is a bytearray/list of bytes
         logger.debug('WriteValue called on %s (len=%d)', self.path, len(value))
         try:
@@ -97,7 +118,7 @@ class GattCharacteristic(ServiceInterface):
                 logger.exception('on_write callback failed')
 
     @method()
-    def StartNotify(self) -> None:
+    def StartNotify(self):
         logger.info('StartNotify called on %s', self.path)
         print(f"[GATT DEBUG] StartNotify called on {self.path}")
         self._notifying = True
@@ -109,7 +130,7 @@ class GattCharacteristic(ServiceInterface):
             logger.exception('Error while handling StartNotify subscription')
 
     @method()
-    def StopNotify(self) -> None:
+    def StopNotify(self):
         logger.info('StopNotify called on %s', self.path)
         print(f"[GATT DEBUG] StopNotify called on {self.path}")
         self._notifying = False
@@ -128,15 +149,15 @@ class GattService(ServiceInterface):
         self.uuid = uuid_str
         self.primary = primary
 
-    @dbus_property(signature='s')
+    @_dbus_prop('s')
     def UUID(self) -> 's':
         return self.uuid
 
-    @dbus_property(signature='b')
+    @_dbus_prop('b')
     def Primary(self) -> 'b':
         return self.primary
 
-    @dbus_property(signature='ao')
+    @_dbus_prop('ao')
     def Characteristics(self) -> 'ao':
         return []
 
@@ -326,20 +347,22 @@ class BlueZGattServer:
 
         # Emit PropertiesChanged signal on org.freedesktop.DBus.Properties
         try:
-            # dbus-next low-level signal emitter: destination=None, path, interface, name, signature, body
-            # Body is [interface_name, changed_dict, invalidated_array]
-            self.bus.emit_signal(
-                None,
-                char.path,
-                'org.freedesktop.DBus.Properties',
-                'PropertiesChanged',
-                'sa{sv}as',
-                [
+            from dbus_next import Message, MessageType
+            msg = Message(
+                destination=None,
+                path=char.path,
+                interface='org.freedesktop.DBus.Properties',
+                member='PropertiesChanged',
+                signature='sa{sv}as',
+                body=[
                     'org.bluez.GattCharacteristic1',
                     changed,
                     []
-                ]
+                ],
+                message_type=MessageType.SIGNAL,
             )
+            # fire-and-forget
+            self.bus.send(msg)
             logger.debug('Emitted PropertiesChanged for notification (len=%d)', len(data))
         except Exception:
             logger.exception('Failed to emit notification')

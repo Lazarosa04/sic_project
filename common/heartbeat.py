@@ -73,18 +73,26 @@ def sign_heartbeat(counter: int, sink_private_key: ec.EllipticCurvePrivateKey) -
     return {
         "counter": counter,
         "timestamp": timestamp,
-        "data": data_to_sign,
-        "signature": signature_bytes.hex() # Envia como string hex
+        "data": data_to_sign.hex(),  # Envia como string hex para JSON serialization
+        "signature": signature_bytes.hex()  # Também como string hex
     }
 
 
 def verify_heartbeat(heartbeat_msg: Dict, signer_public_key: ec.EllipticCurvePublicKey) -> bool:
     """
     Verifica a assinatura digital do Heartbeat (garantindo que veio do Sink).
+    
+    Nota: Quando o Heartbeat é serializado em JSON e transmitido via BLE,
+    o campo 'data' pode ser enviado como hex string (se foi convertido por JSON).
+    Esta função trata ambos os casos: bytes brutos ou hex string.
     """
     try:
         signature_bytes = bytes.fromhex(heartbeat_msg["signature"])
         data_to_verify = heartbeat_msg["data"]
+        
+        # Converter hex string para bytes se necessário
+        if isinstance(data_to_verify, str):
+            data_to_verify = bytes.fromhex(data_to_verify)
         
         # Tenta verificar a assinatura
         signer_public_key.verify(
