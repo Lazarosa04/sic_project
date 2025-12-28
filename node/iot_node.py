@@ -44,7 +44,7 @@ class IoTNode:
     Representa um dispositivo IoT (sensor/roteador) no projeto SIC.
     Contém a lógica de identidade, estado de rede, roteamento e liveness.
     """
-    def __init__(self, name: str, is_sink: bool = False, adapter: Optional[str] = None):
+    def __init__(self, name: str, is_sink: bool = False, adapter: Optional[str] = None, ble_gatt_server=None):
         self.name = name
         self.is_sink = is_sink
         self._debug_mode = False  # Toggle for BLE message logging
@@ -70,6 +70,7 @@ class IoTNode:
         # 4. BLE MANAGER (Conexões BLE reais)
         self.ble_manager: Optional[BLEConnectionManager] = None
         self.ble_advertiser: Optional[BLEAdvertiser] = None
+        self.ble_gatt_server = ble_gatt_server  # GATT server for downlink notifications
         # Adapter used for BLE operations (hci0, hci1, etc.)
         # If not provided, fall back to environment variable `SIC_BLE_ADAPTER` or 'hci0'.
         self.adapter = adapter or os.environ.get('SIC_BLE_ADAPTER', 'hci0')
@@ -133,7 +134,16 @@ class IoTNode:
         
         if self._debug_mode:
             source_short = source_link_nid[:8] if source_link_nid != "UNKNOWN" else "UNKNOWN"
-            print(f"[{self.name}] Mensagem BLE recebida de {source_short}... (handle: {sender_handle})")
+            # Check if sender is uplink - show both origin and relay
+            if self.uplink_nid and source_link_nid == self.uplink_nid:
+                # This is direct from uplink - it's the origin
+                print(f"[{self.name}] Mensagem BLE recebida de {source_short}... (Uplink direto) (handle: {sender_handle})")
+            elif self.uplink_nid:
+                # Message originated elsewhere but relayed by uplink
+                uplink_short = self.uplink_nid[:8]
+                print(f"[{self.name}] Mensagem BLE recebida: origem={source_short}... via Uplink {uplink_short}... (handle: {sender_handle})")
+            else:
+                print(f"[{self.name}] Mensagem BLE recebida de {source_short}... (handle: {sender_handle})")
         
         # Processar mensagem através da lógica de roteamento existente
         self.process_incoming_message(message, source_link_nid)
@@ -198,8 +208,39 @@ class IoTNode:
             
             if is_valid:
                 self.lost_heartbeats = 0
+                # Forward heartbeat to all downlinks
+                if self.downlinks:
+                    asyncio.create_task(self._forward_heartbeat_to_downlinks(heartbeat_msg))
             else:
                 pass  # Invalid signature, will be tracked in check_liveness
+    
+    async def _forward_heartbeat_to_downlinks(self, heartbeat_msg: Dict):
+        """ Reenvia heartbeat para todos os downlinks conectados via GATT notify. """
+        if not self.downlinks:
+            return
+        
+        # Prefer GATT server notification (for devices connected as centrals)
+        if self.ble_gatt_server:
+            try:
+                hb_json = json.dumps(heartbeat_msg)
+                hb_bytes = hb_json.encode('utf-8')
+                await self.ble_gatt_server.notify_all(hb_bytes)
+            except Exception as e:
+                print(f"[{self.name}] Erro ao notificar HB via GATT: {e}")
+        # Fallback to BLE manager for client-mode connections (if any)
+        elif self.ble_manager:
+            try:
+                hb_json = json.dumps(heartbeat_msg)
+                hb_bytes = hb_json.encode('utf-8')
+                for downlink_nid in list(self.downlinks.keys()):
+                    try:
+                        success = await self.ble_manager.send_to_downlink(downlink_nid, hb_bytes)
+                        if not success:
+                            print(f"[{self.name}] ⚠️ Falha ao enviar HB para downlink {downlink_nid[:8]}...")
+                    except Exception as e:
+                        print(f"[{self.name}] Erro ao enviar HB para {downlink_nid[:8]}...: {e}")
+            except Exception as e:
+                print(f"[{self.name}] Erro ao serializar HB: {e}")
 
     async def check_liveness(self):
         """ Verifica se o Uplink falhou (Heartbeat Perdido). """
