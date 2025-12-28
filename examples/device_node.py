@@ -63,7 +63,17 @@ async def interactive_loop(node: IoTNode):
             break
 
         if cmd == 'help':
-            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, debug [on|off], send_inbox <nid> <json>, quit")
+            print("Commands:")
+            print("  help                          - Show this help")
+            print("  scan [secs]                   - Scan for SIC devices")
+            print("  scan_all [secs]               - Scan for ALL BLE devices (debug)")
+            print("  list                          - List discovered devices")
+            print("  connect <idx|nid>             - Connect to device")
+            print("  disconnect                    - Disconnect from uplink")
+            print("  status                        - Show connection status")
+            print("  debug [on|off|toggle]         - Toggle debug logging")
+            print("  send_inbox <nid> <json>       - Send DTLS inbox message")
+            print("  quit/exit                     - Exit")
             continue
 
         if cmd == 'debug':
@@ -84,25 +94,30 @@ async def interactive_loop(node: IoTNode):
             node._debug_mode = debug_mode
             continue
 
-        if cmd == 'scan':
+        if cmd == 'scan' or cmd == 'scan_all':
+            show_all = (cmd == 'scan_all')
             secs = 5.0
             if len(parts) > 1:
                 try:
                     secs = float(parts[1])
                 except Exception:
                     print('Invalid duration; using 5s')
-            print(f"Scanning for {secs}s...")
+            mode_str = "ALL BLE devices" if show_all else "SIC devices"
+            print(f"Scanning for {mode_str} ({secs}s)...")
             try:
-                # Run scan; the BLE manager caches discovered BLEDevice objects
-                # Use the adapter chosen when starting the script (node.adapter)
-                _ = await node.find_uplink_candidates(scan_duration=secs, adapter=node.adapter)
+                # Run scan with show_all parameter
+                if node.ble_manager:
+                    await node.ble_manager.scan_for_uplinks(duration=secs, adapter=node.adapter, show_all=show_all)
+                else:
+                    print("BLE manager not available")
+                    continue
 
-                # Use the BLE manager's discovered_devices to include addresses
-                if not node.ble_manager or not node.ble_manager.discovered_devices:
-                    scan_results = {}
-                    print('No devices found.')
+                # Use the BLE manager's discovered_devices to include addresses (only SIC devices)
+                if not node.ble_manager.discovered_devices:
+                    print('No SIC devices found.' if not show_all else 'Scan complete.')
                 else:
                     scan_results = {nid: (dev.address, hop) for nid, (dev, hop) in node.ble_manager.discovered_devices.items()}
+                    print(f"\n=== SIC Devices Found: {len(scan_results)} ===")
                     for i, (nid, (addr, hop)) in enumerate(scan_results.items()):
                         print(f"[{i}] {nid} (hop={hop}) address={addr}")
             except Exception as e:

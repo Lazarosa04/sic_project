@@ -95,13 +95,14 @@ class BLEConnectionManager:
             print(f"[BLE] Erro ao parsear Advertisement Data: {e}")
             return None
     
-    async def scan_for_uplinks(self, duration: float = 5.0, adapter: Optional[str] = None) -> Dict[str, int]:
+    async def scan_for_uplinks(self, duration: float = 5.0, adapter: Optional[str] = None, show_all: bool = False) -> Dict[str, int]:
         """
         Realiza scanning BLE para descobrir dispositivos vizinhos.
 
         Args:
             duration: Duração do scan em segundos
             adapter: opcional, HCI adapter a usar (ex: 'hci0')
+            show_all: se True, mostra TODOS os devices BLE (não só SIC)
 
         Returns:
             Dicionário {NID: HopCount} dos dispositivos descobertos
@@ -127,6 +128,10 @@ class BLEConnectionManager:
                 if nid not in self.discovered_devices or hop_count < self.discovered_devices[nid][1]:
                     self.discovered_devices[nid] = (device, hop_count)
                     print(f"[BLE][{adapter_name}] Descoberto: {nid[:8]}... (Hop: {hop_count}, RSSI: {advertisement_data.rssi})")
+            elif show_all:
+                # Debug mode: show ALL BLE devices even if not SIC format
+                name = advertisement_data.local_name or device.name or "Unknown"
+                print(f"[BLE][{adapter_name}] Device: {device.address} | Name: {name} | RSSI: {advertisement_data.rssi}")
 
         # Iniciar scanning
         # If an adapter is provided (e.g. 'hci1') pass it to BleakScanner so
