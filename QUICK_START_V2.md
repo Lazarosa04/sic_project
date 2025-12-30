@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 ```bash
 # Criar CA e certificados para dispositivos
-python support/generate_devices.py --devices "Device A" "Device B" "Device C"
+python support/generate_devices.py --name "Device A, Device B, Device C"
 ```
 
 Isso cria:
