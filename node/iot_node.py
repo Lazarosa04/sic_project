@@ -29,7 +29,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 # As importações são ABSOLUTAS.
 from common.network_utils import build_advertisement_data, bytes_to_string_nid, SIC_SERVICE_UUID
 from support.ca_manager import OUTPUT_DIR 
-from common.dtls_service import seal_inbox_message # NOVO: Importação para serviços seguros
+# DTLS Inbox desativado neste projeto (propagação apenas de Heartbeats)
 
 # --- Constantes ---
 DISCONNECTED_HOP_COUNT = -1 
@@ -148,53 +148,8 @@ class IoTNode:
         # Processar mensagem através da lógica de roteamento existente
         self.process_incoming_message(message, source_link_nid)
 
-    # --- LÓGICA DE SERVIÇOS SEGUROS (NOVA) ---
-
-    def send_inbox_message(self, destination_nid: str, payload: Dict[str, Any]) -> Optional[Dict]:
-        """
-        Cria e assina uma mensagem de serviço de Inbox (DTLS Application Layer).
-        Retorna o pacote de roteamento.
-        """
-        if not self.private_key or not self.nid:
-            print(f"[{self.name}] ERRO: Não é possível enviar Inbox sem chave privada/NID.")
-            return None
-            
-        if self.uplink_nid is None:
-            print(f"[{self.name}] ERRO: Não é possível enviar Inbox. Node desconectado.")
-            return None
-
-        # 1. Empacotar de forma segura (Assinatura)
-        secure_packet = seal_inbox_message(
-            sender_nid=self.nid,
-            payload=payload,
-            private_key=self.private_key
-        )
-        
-        # 2. Encapsular para a camada de roteamento
-        message = {
-            "source_nid": self.nid,
-            "destination_nid": destination_nid,
-            "type": "DTLS_INBOX",
-            "secure_packet": secure_packet
-        }
-        
-        print(f"[{self.name}] Inbox SEGURO pronto para envio para {destination_nid[:8]}...")
-        return message
-    
-    async def send_message_ble(self, message: Dict) -> bool:
-        """Envia mensagem via BLE para o uplink"""
-        if not self.ble_manager or not self.ble_manager.is_connected_to_uplink():
-            print(f"[{self.name}] ERRO: Sem conexão BLE ativa.")
-            return False
-        
-        try:
-            # Serializar mensagem para JSON bytes
-            data = json.dumps(message).encode('utf-8')
-            success = await self.ble_manager.send_to_uplink(data)
-            return success
-        except Exception as e:
-            print(f"[{self.name}] ERRO ao enviar mensagem BLE: {e}")
-            return False
+    # --- LÓGICA DE SERVIÇOS SEGUROS ---
+    # Removida: não enviamos mensagens entre dispositivos neste projeto.
 
     # --- LÓGICA DE LIVENESS ---
 
@@ -308,9 +263,9 @@ class IoTNode:
             self.process_heartbeat(message)
             return
 
-        # Checagem de DTLS Inbox para Encaminhamento (NOVO)
+        # Mensagens de dados (DTLS Inbox) não são usadas neste projeto
         if message.get("type") == "DTLS_INBOX":
-            pass  # Encaminhamos para o Sink
+            return
 
         # 1. Atualizar Tabela de Encaminhamento
         self.update_forwarding_table(source_nid, source_link_nid)

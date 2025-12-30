@@ -12,7 +12,7 @@ Commands (type at prompt):
   connect <idx|nid>   - connect to device by index (from list) or NID
   disconnect          - disconnect uplink
   status              - print node status
-  send_inbox <nid> <json_payload> - create and send a DTLS Inbox message to destination
+    # DTLS Inbox desativado neste projeto; apenas Heartbeats da Sink
   quit / exit         - exit and cleanup
 
 This script uses `IoTNode` and the BLE manager already present in the project.
@@ -62,7 +62,7 @@ async def interactive_loop(node: IoTNode):
             break
 
         if cmd == 'help':
-            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, send_inbox <nid> <json>, quit")
+            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, quit")
             continue
 
         if cmd == 'scan':
@@ -134,29 +134,7 @@ async def interactive_loop(node: IoTNode):
             node.print_status()
             continue
 
-        if cmd == 'send_inbox':
-            if len(parts) < 3:
-                print('Usage: send_inbox <destination_nid> <json_payload>')
-                continue
-            dest = parts[1]
-            payload_raw = parts[2]
-            try:
-                payload = json.loads(payload_raw)
-            except Exception as e:
-                print(f'Invalid JSON payload: {e}')
-                continue
-
-            msg = node.send_inbox_message(destination_nid=dest, payload=payload)
-            if not msg:
-                print('Failed to build inbox message (are you connected?).')
-                continue
-            # send
-            try:
-                sent = await node.send_message_ble(msg)
-                print('Sent.' if sent else 'Send failed.')
-            except Exception as e:
-                print(f'Error sending: {e}')
-            continue
+        # send_inbox command removed: not supported in this project
 
         print('Unknown command. Type help.')
 

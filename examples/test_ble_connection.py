@@ -130,64 +130,7 @@ async def test_ble_disconnection():
     print(f"  • Estado: {'DESCONECTADO' if node_a.hop_count == -1 else 'CONECTADO'}")
 
 
-async def test_ble_message_sending():
-    """
-    Teste 4: Envio de mensagens via BLE
-    """
-    print("\n" + "="*70)
-    print(" TESTE 4: ENVIO DE MENSAGENS VIA BLE ".center(70, "="))
-    print("="*70 + "\n")
-    
-    # Inicializar Node
-    node_a = IoTNode(name="Node A", is_sink=False)
-    sink = SinkHost()
-    
-    if not node_a.nid or not node_a.private_key:
-        print("[ERRO] Node não inicializado corretamente.")
-        return
-    
-    # Simular conexão
-    node_a.uplink_nid = sink.nid
-    node_a.hop_count = 1
-    
-    print(f"[TEST] Node A conectado ao Sink (simulado)")
-    
-    # Criar mensagem de teste
-    test_payload = {
-        "sensor_type": "temperature",
-        "value": 23.5,
-        "unit": "Celsius",
-        "timestamp": "2025-12-16T10:30:00Z"
-    }
-    
-    print(f"[TEST] Criando mensagem Inbox segura...")
-    message = node_a.send_inbox_message(
-        destination_nid=sink.nid,
-        payload=test_payload
-    )
-    
-    if message:
-        print(f"[TEST] ✅ Mensagem criada com sucesso:")
-        print(f"  • Tipo: {message.get('type')}")
-        print(f"  • Origem: {message.get('source_nid', '')[:8]}...")
-        print(f"  • Destino: {message.get('destination_nid', '')[:8]}...")
-        print(f"  • Assinada: {'secure_packet' in message}")
-        
-        print(f"\n[TEST] Tentando enviar via BLE...")
-        
-        # Tentar enviar (falhará sem conexão BLE real)
-        try:
-            success = await node_a.send_message_ble(message)
-            if success:
-                print(f"[TEST] ✅ Mensagem enviada via BLE!")
-            else:
-                print(f"[TEST] ⚠️ Falha ao enviar (sem hardware BLE real)")
-        except Exception as e:
-            print(f"[TEST] ⚠️ Esperado: {e}")
-            print(f"[INFO] Envio BLE real requer hardware e conexão ativa.")
-    
-    else:
-        print(f"[TEST] ❌ Falha ao criar mensagem.")
+# Mensagens DTLS Inbox não são suportadas neste projeto.
 
 
 async def test_heartbeat_broadcast():
@@ -242,8 +185,7 @@ async def main():
     await test_ble_disconnection()
     await asyncio.sleep(1)
     
-    await test_ble_message_sending()
-    await asyncio.sleep(1)
+    # Teste de envio de mensagens removido (projeto heartbeat-only)
     
     await test_heartbeat_broadcast()
     

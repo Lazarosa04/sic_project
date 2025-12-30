@@ -16,7 +16,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 # ------------------------------------------------------------------------------------
 
 from common.heartbeat import sign_heartbeat 
-from common.dtls_service import unseal_inbox_message 
 from common.ble_manager import BLEConnectionManager, BLEAdvertiser
 # Prefer BlueZAdvertiser on Linux if available (BlueZ + dbus-next)
 try:
@@ -172,39 +171,21 @@ class SinkHost:
                     
     def process_incoming_message(self, message: Dict, source_link_nid: str):
         """
-        Processa mensagens recebidas. Se for uma mensagem de Inbox, desempacota-a.
+        Processa mensagens recebidas. Neste projeto, apenas Heartbeats são relevantes.
         """
         source_nid = message.get("source_nid") 
         
+        if message.get("is_heartbeat", False):
+            print(f"[{self.name}] Heartbeat recebido de {source_nid[:8]}... (eco ou teste). Ignorado.")
+            return
+        
+        # Ignorar mensagens de dados (DTLS Inbox) e outras
         if message.get("type") == "DTLS_INBOX":
-            secure_packet = message.get("secure_packet")
-            
-            # 1. Obter a chave pública do Nó 
-            sender_public_key = self.node_public_keys.get(source_nid)
-            
-            if not sender_public_key:
-                print(f"[{self.name}] ERRO: Não é possível processar Inbox. Chave de {source_nid[:8]}... não encontrada.")
-                return
-
-            # 2. Desempacotar e Verificar (Validação de Assinatura End-to-End)
-            payload = unseal_inbox_message(secure_packet, sender_public_key)
-            
-            if payload:
-                print("\n" + "*"*60)
-                print(f"*** {self.name}: MENSAGEM INBOX SEGURO RECEBIDA ***".center(60))
-                print(f"  De Nó: {source_nid[:8]}...")
-                print(f"  Conteúdo:")
-                print(json.dumps(payload, indent=4))
-                print("*"*60 + "\n")
-                
             return
-            
-        elif message.get("is_heartbeat", False):
-            print(f"[{self.name}] Recebeu o seu próprio Heartbeat (ou eco). Ignorado.")
-            return
-            
-        else:
-            print(f"[{self.name}] Mensagem de dados genérica recebida de {source_nid[:8]}... (Descartada)")
+        
+        # Para depuração, registar mensagens não-HB
+        if source_nid:
+            print(f"[{self.name}] Mensagem não suportada recebida de {source_nid[:8]}... (ignorada)")
     
     async def send_heartbeat_ble(self, heartbeat_counter: int) -> int:
         """Envia Heartbeat para todos os Downlinks via BLE"""
@@ -246,71 +227,5 @@ class SinkHost:
         return success_count
 
 
-async def simulate_secure_service():
-    """ Simula um Node A a enviar uma mensagem Inbox segura para o Sink usando BLE. """
-    
-    # 1. Inicializar Node A (precisa carregar a sua própria chave privada)
-    node_a = IoTNode(name=NODE_A_NAME, is_sink=False)
-
-    # 2. Inicializar Sink (Carrega a sua identidade)
-    sink = SinkHost()
-    
-    # 3. Adicionar o NID real do Node A ao mapa de chaves públicas do Sink (CORREÇÃO CRÍTICA)
-    if node_a.nid:
-        sink.add_node_key(NODE_A_NAME, node_a.nid)
-    
-    if node_a.nid is None or sink.nid is None:
-        print("[ERRO FATAL] Identidade de Nó/Sink ausente. Certifique-se que o ca_manager.py foi executado.")
-        return
-
-    print("\n[INFO] Modo de simulação (BLE real requer hardware). Pulando scanning/conexão BLE...")
-    
-    # Simulação da Conexão Uplink (para permitir o envio)
-    node_a.uplink_nid = sink.nid 
-    node_a.hop_count = 1 
-    
-    # Mensagem de teste
-    test_payload = {
-        "sensor_id": "temp_001",
-        "value": 25.4,
-        "units": "Celsius",
-        "priority": "HIGH"
-    }
-    
-    print("\n" + "#"*60)
-    print(f"## TESTE DE SERVIÇO SEGURO DTLS INBOX ##".center(60))
-    print("#"*60 + "\n")
-
-    # A. Cenário de Sucesso (Assinatura Válida)
-    inbox_message_valid = node_a.send_inbox_message(
-        destination_nid=sink.nid,
-        payload=test_payload
-    )
-
-    if inbox_message_valid:
-        # Simular o Sink a receber a mensagem de A
-        print("\n--- SIMULANDO: Sink a receber mensagem VÁLIDA do Node A ---")
-        sink.process_incoming_message(inbox_message_valid, source_link_nid=node_a.nid)
-        
-    
-    # B. Cenário de Falha (Simular um Ataque de Modificação)
-    print("\n--- SIMULANDO: Ataque de MODIFICAÇÃO no Pacote ---")
-    
-    if inbox_message_valid:
-        
-        malicious_message = inbox_message_valid.copy()
-        
-        # ATACANTE: Altera o valor (viola a integridade)
-        malicious_message['secure_packet']['inbox_data']['payload']['value'] = 999.9 
-        
-        print(f"[{node_a.name}] O Node A enviou o valor original: {test_payload['value']}")
-        print(f"[{sink.name}] Recebido um pacote com valor MODIFICADO: 999.9")
-        print("\n--- SIMULANDO: Sink a tentar desempacotar e verificar ataque ---")
-        
-        # O Sink tenta verificar a assinatura, que falhará devido à alteração
-        sink.process_incoming_message(malicious_message, source_link_nid=node_a.nid)
-
-
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(simulate_secure_service())
+    print("[SinkHost] Este módulo fornece a classe SinkHost e envio de Heartbeats. Use sink_app.py para executar.")
