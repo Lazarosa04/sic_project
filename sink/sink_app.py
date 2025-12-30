@@ -79,8 +79,7 @@ class SinkApplication(IoTNode):
         
         # 2. Verificar se há BLE Manager disponível
         if not self.ble_manager and not getattr(self, 'ble_gatt_server', None):
-            print(f"[{self.name}][HB:{self.heartbeat_counter}] BLE Manager/GATT server não disponível. Modo simulação.")
-            return
+            print(f"[{self.name}][HB:{self.heartbeat_counter}] BLE Manager/GATT server não disponível. Continuando em modo simulado.")
         
         # 3. Enviar via BLE para todos os Downlinks conectados
         # Ensure heartbeat payload is JSON-serializable (convert raw bytes to hex)
@@ -102,17 +101,12 @@ class SinkApplication(IoTNode):
             try:
                 await self.ble_gatt_server.notify_all(data)
                 sub_count = getattr(self.ble_gatt_server, 'get_subscriber_count', lambda: 0)()
-                if sub_count > 0:
-                    print(f"[{self.name}][HB:{self.heartbeat_counter}] Enviado via GATT server (subscribers={sub_count}).")
-                    return
-            except Exception:
-                pass
+                print(f"[{self.name}][HB:{self.heartbeat_counter}] GATT notify emitido (subscribers={sub_count}).")
+            except Exception as e:
+                print(f"[{self.name}] Aviso: falha ao notificar via GATT server: {e}")
 
 
         downlink_count = self.ble_manager.get_downlink_count() if self.ble_manager else 0
-
-        if downlink_count == 0:
-            return
         
         # Estrutura da mensagem de rede
         message_payload = {
@@ -127,15 +121,26 @@ class SinkApplication(IoTNode):
         data = json.dumps(message_payload).encode('utf-8')
         
         # Enviar via BLE
-        success_count = await self.ble_manager.broadcast_to_downlinks(data)
-        print(f"[{self.name}][HB:{self.heartbeat_counter}] Enviado para {success_count}/{downlink_count} Downlinks via BLE.")
+        if downlink_count > 0:
+            try:
+                success_count = await self.ble_manager.broadcast_to_downlinks(data)
+            except Exception as e:
+                print(f"[{self.name}] Aviso: falha no broadcast BLE: {e}")
+                success_count = 0
+            print(f"[{self.name}][HB:{self.heartbeat_counter}] Broadcast BLE: {success_count}/{downlink_count} downlinks.")
+        else:
+            # No BLE-manager downlinks (Sink is serving via GATT); GATT notify above is sufficient
+            pass
             
     async def heartbeat_loop(self):
         """
         Loop assíncrono para enviar o Heartbeat periodicamente.
         """
         while True:
-            await self.send_heartbeat()
+            try:
+                await self.send_heartbeat()
+            except Exception as e:
+                print(f"[{self.name}] Aviso: erro ao enviar Heartbeat: {e}")
             await asyncio.sleep(HEARTBEAT_PACING_SECONDS)
 
 # --- Função principal para iniciar o Sink ---

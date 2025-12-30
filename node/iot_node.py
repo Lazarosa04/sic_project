@@ -56,6 +56,13 @@ class IoTNode:
         self._load_identity()
         
         self.sink_certificate = self._load_sink_certificate() 
+        self.sink_nid: Optional[str] = None
+        if self.sink_certificate:
+            try:
+                nid_attr = self.sink_certificate.subject.get_attributes_for_oid(x509.NameOID.USER_ID)[-1]
+                self.sink_nid = nid_attr.value
+            except Exception:
+                self.sink_nid = None
         
         # 2. ESTADO DA REDE
         self.hop_count: int = 0 if self.is_sink else DISCONNECTED_HOP_COUNT
@@ -80,7 +87,9 @@ class IoTNode:
             self.ble_manager = BLEConnectionManager(
                 device_nid=self.nid,
                 on_message_received=self._on_ble_message_received,
-                adapter=self.adapter
+                adapter=self.adapter,
+                on_uplink_lost=self._on_uplink_lost,
+                on_downlink_lost=self._on_downlink_lost
             )
             # Prefer a real BlueZ advertiser when available, otherwise use fallback
             try:
@@ -148,6 +157,26 @@ class IoTNode:
         # Processar mensagem através da lógica de roteamento existente
         self.process_incoming_message(message, source_link_nid)
 
+    def _on_uplink_lost(self, address: str):
+        """Callback called by BLE manager when uplink disconnects."""
+        # Trigger chain reaction: disconnect uplink and all downlinks, set hop=-1, then rejoin lazily
+        async def _handle():
+            await self.disconnect_uplink()
+            await asyncio.sleep(0)  # yield
+            await self.rejoin_network()
+        try:
+            asyncio.create_task(_handle())
+        except Exception:
+            pass
+
+    def _on_downlink_lost(self, nid: str):
+        """Callback on individual downlink disconnect (for logging)."""
+        try:
+            if nid in self.downlinks:
+                del self.downlinks[nid]
+        except Exception:
+            pass
+
     # --- LÓGICA DE SERVIÇOS SEGUROS ---
     # Removida: não enviamos mensagens entre dispositivos neste projeto.
 
@@ -204,8 +233,9 @@ class IoTNode:
         self.lost_heartbeats += 1
         
         if self.lost_heartbeats > MAX_LOST_HEARTBEATS:
-            print(f"[{self.name}] ⚠️ Heartbeat perdido {self.lost_heartbeats}x. Desconectando...")
+            print(f"[{self.name}] ⚠️ Heartbeat perdido {self.lost_heartbeats}x. Desconectando e reinserindo na rede...")
             await self.disconnect_uplink()
+            await self.rejoin_network()
 
     async def disconnect_uplink(self):
         """ Rotina de desconexão (Secção 3): quebra Uplink, Downlinks, e reseta estado. """
@@ -341,15 +371,69 @@ class IoTNode:
             # Atualizar hop count (assumindo que está em discovered_devices)
             if uplink_nid in self.ble_manager.discovered_devices:
                 _, uplink_hop = self.ble_manager.discovered_devices[uplink_nid]
-                self.hop_count = uplink_hop + 1
+            else:
+                uplink_hop = None
+            # Hop semantics: direct to Sink => 0, otherwise hop = uplink_hop + 1 (fallback to 1 if unknown/negative)
+            if self.sink_nid and uplink_nid == self.sink_nid:
+                self.hop_count = 0
+            else:
+                if uplink_hop is not None and uplink_hop >= 0:
+                    self.hop_count = uplink_hop + 1
+                else:
+                    # If we don't know the uplink's hop (e.g., stale -1), assume we are 1 hop away
+                    self.hop_count = max(1, self.hop_count)
             
             # Atualizar advertiser
             if self.ble_advertiser:
                 self.ble_advertiser.update_hop_count(self.hop_count)
             
             print(f"[{self.name}] ✅ Conectado ao Uplink. Novo Hop Count: {self.hop_count}")
+            # After hop update, give BlueZ a brief moment to publish adv
+            try:
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
         
         return success
+
+    async def rejoin_network(self, scan_duration: float = 5.0):
+        """Scan devices, choose lowest-hop uplink among valid candidates, and connect.
+        Lazy approach: only run on loss; do not switch if current uplink is working.
+        """
+        # If already connected, respect lazy policy and do nothing
+        if self.ble_manager and self.ble_manager.is_connected_to_uplink():
+            return
+        # Update advertising to reflect disconnected state
+        if self.ble_advertiser:
+            try:
+                self.ble_advertiser.update_hop_count(DISCONNECTED_HOP_COUNT)
+            except Exception:
+                pass
+        # Try multiple attempts: prefer adapter; fallback to default; short backoff
+        max_attempts = 3
+        delay = 2.0
+        for attempt in range(1, max_attempts + 1):
+            candidates = {}
+            try:
+                candidates = await self.find_uplink_candidates(scan_duration=scan_duration, adapter=self.adapter)
+            except Exception as e:
+                print(f"[{self.name}] Aviso: scan falhou durante rejoin (tentativa {attempt}): {e}")
+                # Fallback: scan without adapter hint
+                try:
+                    candidates = await self.find_uplink_candidates(scan_duration=scan_duration, adapter=None)
+                except Exception as e2:
+                    print(f"[{self.name}] Aviso: scan fallback falhou (tentativa {attempt}): {e2}")
+
+            target = self.choose_uplink(candidates)
+            if target:
+                ok = await self.connect_to_uplink(target)
+                if ok:
+                    return
+                print(f"[{self.name}] Falha ao reconectar ao uplink {target[:8]}... (tentativa {attempt})")
+            else:
+                print(f"[{self.name}] Nenhum uplink válido encontrado (tentativa {attempt}).")
+            await asyncio.sleep(delay)
+        print(f"[{self.name}] Rejoin falhou após {max_attempts} tentativas.")
 
     def print_status(self):
         print("\n" + "="*50)

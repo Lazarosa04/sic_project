@@ -28,7 +28,9 @@ class BLEConnectionManager:
     Suporta scanning, conexão, envio/recebimento de mensagens e desconexão.
     """
     
-    def __init__(self, device_nid: str, on_message_received: Optional[Callable] = None, adapter: Optional[str] = None):
+    def __init__(self, device_nid: str, on_message_received: Optional[Callable] = None, adapter: Optional[str] = None,
+                 on_uplink_lost: Optional[Callable[[str], None]] = None,
+                 on_downlink_lost: Optional[Callable[[str], None]] = None):
         """
         Inicializa o gerenciador BLE.
         
@@ -38,6 +40,9 @@ class BLEConnectionManager:
         """
         self.device_nid = device_nid
         self.on_message_received = on_message_received
+        # Optional callbacks to inform higher-level node of link losses
+        self.on_uplink_lost = on_uplink_lost
+        self.on_downlink_lost = on_downlink_lost
         
         # Conexão ativa (Uplink para nodes, ou múltiplas para Sink)
         self.uplink_client: Optional[BleakClient] = None
@@ -133,29 +138,39 @@ class BLEConnectionManager:
                 name = advertisement_data.local_name or device.name or "Unknown"
                 print(f"[BLE][{adapter_name}] Device: {device.address} | Name: {name} | RSSI: {advertisement_data.rssi}")
 
-        # Iniciar scanning
-        # If an adapter is provided (e.g. 'hci1') pass it to BleakScanner so
-        # the scan happens on the selected HCI device. Bleak accepts an
-        # `adapter` keyword on Linux/backends that support it.
-        if use_adapter:
-            scanner = BleakScanner(detection_callback=detection_callback, adapter=use_adapter)
-        else:
-            scanner = BleakScanner(detection_callback=detection_callback)
-
-        # Start scanner and run a short-loop to ensure we collect discoveries
-        # for the full requested duration (some backends may deliver events
-        # only while the loop yields). This also avoids any accidental early
-        # return when the first device is discovered.
-        await scanner.start()
+        # Iniciar scanning com tolerância a erros de BlueZ/DBus.
+        # Primeiro tenta com o adapter solicitado; em caso de erro, cai para o default.
+        scanner: Optional[BleakScanner] = None
+        started = False
         try:
-            # loop in small increments so the event loop keeps processing
+            scanner = BleakScanner(detection_callback=detection_callback, adapter=use_adapter) if use_adapter else BleakScanner(detection_callback=detection_callback)
+            await scanner.start()
+            started = True
+        except Exception as e:
+            print(f"[BLE] Aviso: falha ao iniciar scanner (adapter={adapter_name}): {e}. Tentando fallback sem adapter...")
+            try:
+                scanner = BleakScanner(detection_callback=detection_callback)
+                await scanner.start()
+                started = True
+                adapter_name = 'default'
+            except Exception as e2:
+                print(f"[BLE] ERRO: scanner fallback também falhou: {e2}")
+                # Não foi possível iniciar scanner; retornar vazio
+                return {}
+
+        # Run scanning loop
+        try:
             remaining = duration
             interval = 0.5
             while remaining > 0:
                 await asyncio.sleep(min(interval, remaining))
                 remaining -= interval
         finally:
-            await scanner.stop()
+            try:
+                if scanner and started:
+                    await scanner.stop()
+            except Exception:
+                pass
 
         print(f"[BLE] Scanning completo. {len(self.discovered_devices)} dispositivos encontrados.")
 
@@ -386,13 +401,24 @@ class BLEConnectionManager:
             print(f"[BLE] 🚨 UPLINK PERDIDO!")
             self.uplink_client = None
             self.uplink_address = None
-            # Aqui poderia chamar um callback para notificar o IoTNode
+            # Notify upper layer (IoTNode) that uplink was lost
+            try:
+                if self.on_uplink_lost:
+                    self.on_uplink_lost(address)
+            except Exception:
+                pass
         
         # Verificar se era um Downlink
         for nid, downlink_client in list(self.downlink_clients.items()):
             if downlink_client.address == address:
                 print(f"[BLE] Downlink {nid[:8]}... desconectado.")
                 del self.downlink_clients[nid]
+                # Notify upper layer (IoTNode) that a downlink was lost
+                try:
+                    if self.on_downlink_lost:
+                        self.on_downlink_lost(nid)
+                except Exception:
+                    pass
                 break
     
     async def _subscribe_notifications(self, client: BleakClient) -> bool:

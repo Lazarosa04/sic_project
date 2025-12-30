@@ -215,7 +215,12 @@ class BlueZAdvertiser:
             logger.info('Registering advertisement on BlueZ adapter %s', adapter_path)
             await ad_manager.call_register_advertisement(self.ad_path, {})
             self._registered = True
-            logger.info('Advertisement registered: NID=%s Hop=%s', self.nid, self.hop_count)
+            logger.info('Advertisement registered: adapter=%s NID=%s Hop=%s', self.adapter, self.nid, self.hop_count)
+            try:
+                # small delay to let BlueZ publish the new advertisement state
+                await asyncio.sleep(0.2)
+            except Exception:
+                pass
         except Exception as e:
             logger.warning('Failed to register advertisement: %s', e)
             # Cleanup exported object
@@ -254,3 +259,27 @@ class BlueZAdvertiser:
         """Update hop count for future advertisements (requires re-registration to take effect)."""
         self.hop_count = new_hop
         logger.info('Updated hop count to %s (re-register to apply)', new_hop)
+
+    async def refresh(self) -> None:
+        """Re-register the advertisement so updated fields (e.g., hop count)
+        take effect immediately.
+
+        If not currently registered, this is a no-op until `start()` is called.
+        """
+        if not self._registered:
+            return
+        try:
+            await self.stop()
+        except Exception:
+            # continue attempting to start regardless of stop errors
+            pass
+        await self.start()
+
+    async def set_hop_count(self, new_hop: int) -> None:
+        """Set hop count and apply it immediately if already registered."""
+        self.update_hop_count(new_hop)
+        try:
+            await self.refresh()
+        except Exception:
+            # If refresh fails, advertisement will pick up on next successful start
+            pass

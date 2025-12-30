@@ -212,15 +212,25 @@ class SinkHost:
         data = json.dumps(message).encode('utf-8')
 
         # Preferir notificar via GATT server se estiver disponível (clientes inscritos)
-        if getattr(self, 'ble_gatt_server', None) is not None:
-            try:
-                await self.ble_gatt_server.notify_all(data)
-                print(f"[{self.name}][HB:{heartbeat_counter}] Notificado via GATT server.")
-                # We cannot know success_count easily here; report 1 as at least one subscriber
-                return 1
-            except Exception as e:
-                print(f"[{self.name}] Aviso: falha ao notificar via GATT server: {e}")
+            if getattr(self, 'ble_gatt_server', None) is not None:
+                try:
+                    await self.ble_gatt_server.notify_all(data)
+                    sub_count = getattr(self, 'ble_gatt_server').get_subscriber_count() if getattr(self, 'ble_gatt_server', None) else 0
+                    print(f"[{self.name}][HB:{heartbeat_counter}] GATT notify emitido (subscribers={sub_count}).")
+                except Exception as e:
+                    print(f"[{self.name}] Aviso: falha ao notificar via GATT server: {e}")
 
+            if self.ble_manager and self.ble_manager.get_downlink_count() > 0:
+                try:
+                    success_count = await self.ble_manager.broadcast_to_downlinks(data)
+                except Exception as e:
+                    print(f"[{self.name}] Aviso: falha no broadcast BLE: {e}")
+                    success_count = 0
+                print(f"[{self.name}][HB:{heartbeat_counter}] Broadcast BLE: {success_count}/{self.ble_manager.get_downlink_count()} downlinks.")
+                return success_count
+            else:
+                # No BLE-manager downlinks; rely on GATT notify above
+                return 0
         success_count = await self.ble_manager.broadcast_to_downlinks(data)
         
         print(f"[{self.name}][HB:{heartbeat_counter}] Enviado para {success_count} Downlinks via BLE.")
