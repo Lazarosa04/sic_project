@@ -12,6 +12,12 @@ from typing import Optional, Dict, Callable, List, Tuple
 from bleak import BleakScanner, BleakClient
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
+from .network_utils import (
+    BLE_FRAG_SINGLE,
+    BLE_FRAG_START,
+    BLE_FRAG_MIDDLE,
+    BLE_FRAG_END,
+)
 
 # UUIDs do serviço customizado SIC
 SIC_SERVICE_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64c"
@@ -56,6 +62,11 @@ class BLEConnectionManager:
         self.discovered_devices: Dict[str, Tuple[BLEDevice, int]] = {}  # NID -> (Device, HopCount)
         # Preferred HCI adapter for scanning/connecting (e.g. 'hci0')
         self.adapter = adapter
+        # RX fragmentation buffer (for notifications)
+        self._rx_frag_buf: bytearray = bytearray()
+        self._rx_in_progress: bool = False
+        # Default max payload per write/notify minus 1 byte flag. We'll try large first and fallback on errors.
+        self._max_tx_payload_guess: int = 179  # typical after MTU ~ 185; will fallback to 19 if needed
         
         print(f"[BLE] Manager inicializado para {device_nid[:8]}...")
     
@@ -514,14 +525,43 @@ class BLEConnectionManager:
     
     def _notification_handler(self, sender: int, data: bytes):
         """Handler chamado quando uma notificação BLE é recebida"""
-        if self.on_message_received:
+        if not self.on_message_received:
+            return
+        try:
+            if not data:
+                return
+            flag = data[0]
+            payload = data[1:]
+            if flag == BLE_FRAG_SINGLE:
+                import json
+                message = json.loads(payload.decode('utf-8'))
+                self.on_message_received(message, sender)
+                return
+            if flag == BLE_FRAG_START:
+                self._rx_frag_buf = bytearray(payload)
+                self._rx_in_progress = True
+                return
+            if flag == BLE_FRAG_MIDDLE and self._rx_in_progress:
+                self._rx_frag_buf.extend(payload)
+                return
+            if flag == BLE_FRAG_END and self._rx_in_progress:
+                self._rx_frag_buf.extend(payload)
+                assembled = bytes(self._rx_frag_buf)
+                self._rx_frag_buf = bytearray()
+                self._rx_in_progress = False
+                import json
+                message = json.loads(assembled.decode('utf-8'))
+                self.on_message_received(message, sender)
+                return
+            # Fallback: treat as plain JSON for backward compatibility
             try:
-                # Converter bytes para mensagem (assumindo JSON serializado)
                 import json
                 message = json.loads(data.decode('utf-8'))
                 self.on_message_received(message, sender)
-            except Exception as e:
-                print(f"[BLE] ERRO ao processar mensagem: {e}")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[BLE] ERRO ao processar mensagem (frag): {e}")
     
     # ==================== ENVIO DE MENSAGENS ====================
     
@@ -540,14 +580,7 @@ class BLEConnectionManager:
             return False
         
         try:
-            await self.uplink_client.write_gatt_char(
-                SIC_DATA_CHARACTERISTIC_UUID,
-                data,
-                response=True
-            )
-            print(f"[BLE] ✉️ Enviado {len(data)} bytes para Uplink")
-            return True
-            
+            return await self._send_fragmented_to_client(self.uplink_client, data)
         except Exception as e:
             print(f"[BLE] ERRO ao enviar para Uplink: {e}")
             return False
@@ -574,17 +607,63 @@ class BLEConnectionManager:
             return False
         
         try:
-            await client.write_gatt_char(
-                SIC_DATA_CHARACTERISTIC_UUID,
-                data,
-                response=True
-            )
-            print(f"[BLE] ✉️ Enviado {len(data)} bytes para Downlink {target_nid[:8]}...")
-            return True
-            
+            ok = await self._send_fragmented_to_client(client, data)
+            if ok:
+                print(f"[BLE] ✉️ Enviado {len(data)} bytes (frag) para Downlink {target_nid[:8]}...")
+            return ok
         except Exception as e:
             print(f"[BLE] ERRO ao enviar para Downlink: {e}")
             return False
+
+    async def _send_fragmented_to_client(self, client: BleakClient, data: bytes) -> bool:
+        """Send data with simple fragmentation framing: 1 byte flag + payload.
+
+        Tries a large chunk size first, falls back to 19-byte payload if BlueZ rejects length.
+        """
+        if not client or not client.is_connected:
+            return False
+
+        # Attempt once with a larger MTU guess; on failure, retry with 19-byte payload
+        chunk_payload_sizes = [self._max_tx_payload_guess, 19]
+        last_error: Optional[Exception] = None
+        for chunk_payload in chunk_payload_sizes:
+            try:
+                await self._send_with_chunk_size(client, data, chunk_payload)
+                # Remember working size for future sends
+                self._max_tx_payload_guess = chunk_payload
+                return True
+            except Exception as e:
+                last_error = e
+                # Try next smaller size
+                continue
+        if last_error:
+            raise last_error
+        return False
+
+    async def _send_with_chunk_size(self, client: BleakClient, data: bytes, chunk_payload: int) -> None:
+        if chunk_payload < 1:
+            raise ValueError("chunk_payload must be >= 1")
+        total = len(data)
+        # Single frame
+        if total <= chunk_payload:
+            frame = bytes([BLE_FRAG_SINGLE]) + data
+            await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, frame, response=True)
+            return
+        # Start
+        offset = 0
+        first = min(chunk_payload, total)
+        frame = bytes([BLE_FRAG_START]) + data[offset:offset+first]
+        await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, frame, response=True)
+        offset += first
+        # Middles
+        while offset + chunk_payload < total:
+            frame = bytes([BLE_FRAG_MIDDLE]) + data[offset:offset+chunk_payload]
+            await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, frame, response=True)
+            offset += chunk_payload
+        # End
+        frame = bytes([BLE_FRAG_END]) + data[offset:total]
+        await client.write_gatt_char(SIC_DATA_CHARACTERISTIC_UUID, frame, response=True)
+        return
     
     async def broadcast_to_downlinks(self, data: bytes) -> int:
         """

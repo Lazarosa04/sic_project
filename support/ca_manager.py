@@ -185,6 +185,12 @@ def main():
         chave_ca=chave_ca, 
         certificado_ca=certificado_ca
     )
+    gerar_certificado_dispositivo(
+        nome_amigavel="Node B", 
+        organizacao_unidade="IoT Node",
+        chave_ca=chave_ca, 
+        certificado_ca=certificado_ca
+    )
     
     print("\n[INFO] Configuração de Segurança de Identidades (CA, Sink, Node) concluída.")
 

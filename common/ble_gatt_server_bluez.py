@@ -22,6 +22,12 @@ import logging
 import struct
 import uuid
 from typing import Optional, Callable, Dict
+from .network_utils import (
+    BLE_FRAG_SINGLE,
+    BLE_FRAG_START,
+    BLE_FRAG_MIDDLE,
+    BLE_FRAG_END,
+)
 
 try:
     from dbus_next.aio import MessageBus
@@ -114,9 +120,9 @@ class GattCharacteristic(ServiceInterface):
         # Return current value
         logger.debug('ReadValue called on %s', self.path)
         try:
-            print(f"[GATT DEBUG] ReadValue called on {self.path} - current len={len(self._value)}")
+            logger.debug('ReadValue on %s - current len=%d', self.path, len(self._value))
         except Exception:
-            pass
+            logger.exception('Error logging ReadValue debug info')
         return bytes(self._value)
 
     @method()
@@ -124,14 +130,15 @@ class GattCharacteristic(ServiceInterface):
         # value is a bytearray/list of bytes
         logger.debug('WriteValue called on %s (len=%d)', self.path, len(value))
         try:
-            print(f"[GATT DEBUG] WriteValue on {self.path} len={len(value)} payload={bytes(value).hex()[:200]}")
+            # Keep payload logging at debug level and avoid printing to stdout
+            logger.debug('WriteValue on %s len=%d', self.path, len(value))
         except Exception:
-            pass
+            logger.exception('Error logging WriteValue debug info')
         data = bytes(value)
         self._value = data
         if self.on_write:
             try:
-                print(f"[GATT DEBUG] Calling on_write callback for {self.path}")
+                logger.debug('Calling on_write callback for %s', self.path)
                 self.on_write(data)
             except Exception:
                 logger.exception('on_write callback failed')
@@ -139,7 +146,7 @@ class GattCharacteristic(ServiceInterface):
     @method()
     def StartNotify(self):
         logger.info('StartNotify called on %s', self.path)
-        print(f"[GATT DEBUG] StartNotify called on {self.path}")
+        logger.debug('StartNotify called on %s', self.path)
         self._notifying = True
         # Inform server that a central has subscribed
         try:
@@ -151,7 +158,7 @@ class GattCharacteristic(ServiceInterface):
     @method()
     def StopNotify(self):
         logger.info('StopNotify called on %s', self.path)
-        print(f"[GATT DEBUG] StopNotify called on {self.path}")
+        logger.debug('StopNotify called on %s', self.path)
         self._notifying = False
         # Inform server that a central unsubscribed
         try:
@@ -209,21 +216,19 @@ class BlueZGattServer:
 
     async def start(self) -> None:
         logger.info('Starting BlueZ GATT server (adapter=%s)', self.adapter)
-        print(f"[GATT DEBUG] Starting GATT server on adapter={self.adapter} app_path={self.app_path}")
+        logger.debug('Starting GATT server on adapter=%s app_path=%s', self.adapter, self.app_path)
         # Connect to system bus
         try:
-            print(f"[GATT DEBUG] Attempting to connect to system D-Bus (BusType.SYSTEM)")
+            logger.debug('Attempting to connect to system D-Bus (BusType.SYSTEM)')
             self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            print(f"[GATT DEBUG] Connected to system D-Bus (system bus)")
+            logger.debug('Connected to system D-Bus (system bus)')
         except Exception as e_sys:
-            print(f"[GATT DEBUG] Failed to connect to system bus: {e_sys}. Falling back to default MessageBus().connect()")
+            logger.error('Failed to connect to system bus: %s. Falling back to default MessageBus().connect()', e_sys)
             try:
                 self.bus = await MessageBus().connect()
-                print(f"[GATT DEBUG] Connected to default MessageBus (session or auto)")
+                logger.debug('Connected to default MessageBus (session or auto)')
             except Exception as e_fallback:
-                print(f"[GATT ERROR] Could not connect to D-Bus: {e_fallback}")
-                import traceback
-                traceback.print_exc()
+                logger.exception('Could not connect to D-Bus: %s', e_fallback)
                 raise
 
         # Create service and characteristics
@@ -248,20 +253,19 @@ class BlueZGattServer:
         self._characteristics['write'] = char_write
         self._characteristics['notify'] = char_notify
 
-        print(f"[GATT DEBUG] Exported objects: {self._exported_objects}")
+        logger.debug('Exported objects: %s', self._exported_objects)
 
         # Register application with BlueZ GattManager1
         adapter_path = f'/org/bluez/{self.adapter}'
         try:
-            print(f"[GATT DEBUG] Introspecting org.bluez at {adapter_path}...")
+            logger.debug('Introspecting org.bluez at %s...', adapter_path)
             introspection = await self.bus.introspect('org.bluez', adapter_path)
             manager = self.bus.get_proxy_object('org.bluez', adapter_path, introspection)
             if asyncio.iscoroutine(manager):
                 manager = await manager
             gatt_manager = manager.get_interface('org.bluez.GattManager1')
         except Exception as e_introspect:
-            print(f"[GATT ERROR] Failed to introspect org.bluez at {adapter_path}: {e_introspect}")
-            import traceback; traceback.print_exc()
+            logger.exception('Failed to introspect org.bluez at %s: %s', adapter_path, e_introspect)
             # Cleanup exported objects
             for p in self._exported_objects:
                 try:
@@ -274,14 +278,13 @@ class BlueZGattServer:
         register_attempts = 3
         for attempt in range(1, register_attempts + 1):
             try:
-                print(f"[GATT DEBUG] Calling RegisterApplication (attempt {attempt}/{register_attempts})")
+                logger.debug('Calling RegisterApplication (attempt %d/%d)', attempt, register_attempts)
                 await gatt_manager.call_register_application(self.app_path, {})
                 logger.info('GATT application registered at %s', self.app_path)
-                print(f"[GATT DEBUG] Registered GATT application at {self.app_path} with BlueZ GattManager1")
+                logger.debug('Registered GATT application at %s with BlueZ GattManager1', self.app_path)
                 break
             except Exception as e:
-                print(f"[GATT ERROR] RegisterApplication attempt {attempt} failed: {e}")
-                import traceback; traceback.print_exc()
+                logger.exception('RegisterApplication attempt %d failed: %s', attempt, e)
                 if attempt >= register_attempts:
                     # Cleanup exported objects
                     for p in self._exported_objects:
@@ -332,16 +335,16 @@ class BlueZGattServer:
             if self.bus:
                 for p in self._exported_objects:
                     try:
-                        print(f"[GATT DEBUG] Unexporting {p}")
+                        logger.debug('Unexporting %s', p)
                         self.bus.unexport(p)
                     except Exception as e:
-                        print(f"[GATT DEBUG] Error unexporting {p}: {e}")
+                        logger.debug('Error unexporting %s: %s', p, e)
                         pass
                 self._exported_objects = []
                 self._characteristics = {}
                 self.bus = None
                 logger.info('GATT server stopped')
-                print('[GATT DEBUG] GATT server stopped and cleaned up')
+                logger.debug('GATT server stopped and cleaned up')
 
     def _on_write(self, data: bytes) -> None:
         # Called in event loop context
@@ -351,40 +354,57 @@ class BlueZGattServer:
             logger.exception('on_write handler failed')
 
     async def notify_all(self, data: bytes) -> None:
-        """Notify all subscribed centrals by emitting PropertiesChanged for the
-        notify characteristic with Value set to the payload (as 'ay')."""
+        """Notify all subscribed centrals with simple fragmentation.
+
+        Emits multiple PropertiesChanged signals with 1-byte flag + payload frames.
+        Tries a larger chunk size first and falls back to 19-byte payload if needed.
+        """
         if not self.bus or 'notify' not in self._characteristics:
             logger.warning('Cannot notify: GATT server not running')
             return
 
-        char = self._characteristics['notify']
-        # Update internal value
-        char._value = data
+        async def _emit_frame(payload: bytes) -> None:
+            char = self._characteristics['notify']
+            char._value = payload
+            changed = {'Value': Variant('ay', bytes(payload))}
+            try:
+                from dbus_next import Message, MessageType
+                msg = Message(
+                    destination=None,
+                    path=char.path,
+                    interface='org.freedesktop.DBus.Properties',
+                    member='PropertiesChanged',
+                    signature='sa{sv}as',
+                    body=[
+                        'org.bluez.GattCharacteristic1',
+                        changed,
+                        []
+                    ],
+                    message_type=MessageType.SIGNAL,
+                )
+                self.bus.send(msg)
+            except Exception:
+                logger.exception('Failed to emit notification frame')
 
-        # Build changed dict: a{sv} with 'Value': Variant('ay', bytes)
-        changed = {'Value': Variant('ay', bytes(data))}
+        async def _send_with_chunk(chunk_payload: int) -> None:
+            total = len(data)
+            if total <= chunk_payload:
+                await _emit_frame(bytes([BLE_FRAG_SINGLE]) + data)
+                return
+            offset = 0
+            first = min(chunk_payload, total)
+            await _emit_frame(bytes([BLE_FRAG_START]) + data[offset:offset+first])
+            offset += first
+            while offset + chunk_payload < total:
+                await _emit_frame(bytes([BLE_FRAG_MIDDLE]) + data[offset:offset+chunk_payload])
+                offset += chunk_payload
+            await _emit_frame(bytes([BLE_FRAG_END]) + data[offset:total])
 
-        # Emit PropertiesChanged signal on org.freedesktop.DBus.Properties
+        # Try larger payload first (matches client guess), then fallback to 19
         try:
-            from dbus_next import Message, MessageType
-            msg = Message(
-                destination=None,
-                path=char.path,
-                interface='org.freedesktop.DBus.Properties',
-                member='PropertiesChanged',
-                signature='sa{sv}as',
-                body=[
-                    'org.bluez.GattCharacteristic1',
-                    changed,
-                    []
-                ],
-                message_type=MessageType.SIGNAL,
-            )
-            # fire-and-forget
-            self.bus.send(msg)
-            logger.debug('Emitted PropertiesChanged for notification (len=%d)', len(data))
+            await _send_with_chunk(179)
         except Exception:
-            logger.exception('Failed to emit notification')
+            await _send_with_chunk(19)
 
 
 __all__ = ['BlueZGattServer']

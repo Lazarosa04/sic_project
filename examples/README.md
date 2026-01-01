@@ -36,7 +36,7 @@ python3 examples/test_ble_connection.py
 1. **Scanning BLE** (8 segundos) - Descoberta de dispositivos
 2. **Conexão** - Node → Sink
 3. **Desconexão** - Encerramento limpo
-4. **Envio de Mensagens** - DTLS Inbox seguro
+4. **Envio de Mensagens** - Inbox end-to-end (DTLS-like)
 5. **Broadcast** - Heartbeat para Downlinks
 
 **Ideal para:**

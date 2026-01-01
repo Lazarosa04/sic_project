@@ -8,8 +8,9 @@ import threading
 import struct 
 import asyncio 
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 from cryptography.x509 import load_pem_x509_certificate 
 from common.heartbeat import verify_heartbeat, load_sink_keys, sign_heartbeat 
@@ -29,7 +30,27 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardi
 # As importações são ABSOLUTAS.
 from common.network_utils import build_advertisement_data, bytes_to_string_nid, SIC_SERVICE_UUID
 from support.ca_manager import OUTPUT_DIR 
-# DTLS Inbox desativado neste projeto (propagação apenas de Heartbeats)
+# Serviço Inbox end-to-end protegido (DTLS-like), roteado pela rede.
+
+from common.link_security import (
+    LinkSession,
+    build_link_auth1,
+    build_link_auth2,
+    validate_auth1,
+    validate_auth2,
+    derive_link_key,
+    wrap_link_secure,
+    unwrap_link_secure,
+)
+
+from common.e2e_security import (
+    E2ESession,
+    build_e2e_hello1,
+    derive_e2e_key,
+    unwrap_e2e_record,
+    validate_hello2,
+    wrap_e2e_record,
+)
 
 # --- Constantes ---
 DISCONNECTED_HOP_COUNT = -1 
@@ -42,7 +63,20 @@ MAX_LOST_HEARTBEATS = 3
 class IoTNode:
     """
     Representa um dispositivo IoT (sensor/roteador) no projeto SIC.
-    Contém a lógica de identidade, estado de rede, roteamento e liveness.
+    
+    Contém a lógica de:
+    - Identidade (certificados X.509, NID de 128 bits)
+    - Estado de rede (hop count, uplink, downlinks)
+    - Roteamento (forwarding table)
+    - Liveness (heartbeats)
+    - Segurança por link (autenticação mútua, session keys, MACs)
+    - Segurança end-to-end (DTLS-like para serviço Inbox)
+    
+    FEATURE BÓNUS - Múltiplos Sinks:
+    - Suporta cenário com múltiplos Sinks na rede
+    - Deteta mudança de Sink através do NID no heartbeat
+    - Invalida sessões DTLS automaticamente quando o Sink muda
+    - Permite reconexão a Sink diferente
     """
     def __init__(self, name: str, is_sink: bool = False, adapter: Optional[str] = None, ble_gatt_server=None):
         self.name = name
@@ -54,13 +88,41 @@ class IoTNode:
         self.certificate: Optional[x509.Certificate] = None
         self.private_key = None 
         self._load_identity()
+
+        # Link-security state (per-neighbor)
+        self.ca_certificate: Optional[x509.Certificate] = self._load_ca_certificate()
+        self._our_cert_pem: Optional[bytes] = None
+        if self.certificate is not None:
+            try:
+                self._our_cert_pem = self.certificate.public_bytes(serialization.Encoding.PEM)
+            except Exception:
+                self._our_cert_pem = None
+
+        self.link_sessions: Dict[str, LinkSession] = {}
+        # Pending AUTH2 futures keyed by target peer NID
+        self._pending_auth2: Dict[str, asyncio.Future] = {}
+        # Pending AUTH1 ephemeral state keyed by peer NID
+        self._pending_auth1_state: Dict[str, Dict[str, Any]] = {}
+
+        # End-to-end (DTLS-like) sessions to Sink
+        # Keyed by (sink_nid, client_id)
+        self.e2e_sessions: Dict[Tuple[str, int], E2ESession] = {}
+        # Pending HELLO2 futures keyed by client_id
+        self._pending_e2e_hello2: Dict[int, asyncio.Future] = {}
+        # Pending HELLO1 ephemeral state keyed by client_id
+        self._pending_e2e_state: Dict[int, Dict[str, Any]] = {}
         
+        # MULTI-SINK SUPPORT (Feature Bónus)
+        # O sink_nid é o NID do Sink atualmente conhecido
+        # Pode ser atualizado dinamicamente se detetarmos um Sink diferente
         self.sink_certificate = self._load_sink_certificate() 
         self.sink_nid: Optional[str] = None
+        self._current_network_sink_nid: Optional[str] = None  # Sink da rede atual
         if self.sink_certificate:
             try:
                 nid_attr = self.sink_certificate.subject.get_attributes_for_oid(x509.NameOID.USER_ID)[-1]
                 self.sink_nid = nid_attr.value
+                self._current_network_sink_nid = self.sink_nid
             except Exception:
                 self.sink_nid = None
         
@@ -73,6 +135,9 @@ class IoTNode:
         # 3. MONITORIZAÇÃO
         self.lost_heartbeats: int = 0
         self.messages_routed_uplink: int = 0
+
+        # Network control: block forwarding heartbeats to specific direct downlinks
+        self.blocked_heartbeat_downlinks: set[str] = set()
         
         # 4. BLE MANAGER (Conexões BLE reais)
         self.ble_manager: Optional[BLEConnectionManager] = None
@@ -102,6 +167,14 @@ class IoTNode:
                 self.ble_advertiser = BLEAdvertiser(self.nid, self.hop_count)
         
         print(f"[{self.name}] Inicializado. NID: {self.nid}, Hop Count: {self.hop_count}")
+
+    def _load_ca_certificate(self) -> Optional[x509.Certificate]:
+        try:
+            ca_path = os.path.join(OUTPUT_DIR, "ca_certificate.pem")
+            with open(ca_path, "rb") as f:
+                return x509.load_pem_x509_certificate(f.read())
+        except Exception:
+            return None
 
     def _load_identity(self):
         """ Carrega o certificado X.509, a chave privada e extrai o NID. """
@@ -138,8 +211,9 @@ class IoTNode:
     
     def _on_ble_message_received(self, message: Dict, sender_handle: int):
         """Callback chamado quando uma mensagem BLE é recebida"""
-        # Determinar o NID do sender (assumindo que vem na mensagem)
-        source_link_nid = message.get("source_nid", "UNKNOWN")
+        # Determinar o NID do vizinho imediato (link sender).
+        # Para mensagens encaminhadas, source_nid é a origem final; link_sender_nid é o próximo salto.
+        source_link_nid = message.get("link_sender_nid") or message.get("source_nid", "UNKNOWN")
         
         if self._debug_mode:
             source_short = source_link_nid[:8] if source_link_nid != "UNKNOWN" else "UNKNOWN"
@@ -156,6 +230,105 @@ class IoTNode:
         
         # Processar mensagem através da lógica de roteamento existente
         self.process_incoming_message(message, source_link_nid)
+
+    async def _send_plain_to_neighbor(self, neighbor_nid: str, msg: Dict[str, Any]) -> bool:
+        """Send a JSON message to an adjacent neighbor without per-link MAC.
+
+        Used for link authentication messages (LINK_AUTH1/2).
+        """
+        # Prefer GATT notify for downlinks (we act as peripheral). BLEManager
+        # has no client connection to downlinks unless we explicitly accepted
+        # them, so use notify when sending to non-uplink neighbors.
+        if not self.ble_manager and not self.ble_gatt_server:
+            return False
+        msg = dict(msg)
+        msg.setdefault("link_sender_nid", self.nid)
+        data = json.dumps(msg).encode("utf-8")
+        # If targeting uplink, use client write
+        if self.uplink_nid and neighbor_nid == self.uplink_nid and self.ble_manager:
+            return await self.ble_manager.send_to_uplink(data)
+        # Otherwise, use GATT notify to reach subscribed downlinks
+        try:
+            if self.ble_gatt_server is not None:
+                await self.ble_gatt_server.notify_all(data)
+                return True
+        except Exception:
+            pass
+        # Fallback: if we do have a client connection to the downlink, use it
+        if self.ble_manager:
+            return await self.ble_manager.send_to_downlink(neighbor_nid, data)
+        return False
+
+    async def _send_secure_to_neighbor(self, neighbor_nid: str, inner_msg: Dict[str, Any]) -> bool:
+        """Send a per-link authenticated message (HMAC+seq) to an adjacent neighbor."""
+        if not self.nid:
+            return False
+        session = self.link_sessions.get(neighbor_nid)
+        if not session:
+            return False
+        secure = wrap_link_secure(session, self.nid, inner_msg)
+        data = json.dumps(secure).encode("utf-8")
+        # Uplink: use client write
+        if self.uplink_nid and neighbor_nid == self.uplink_nid and self.ble_manager:
+            return await self.ble_manager.send_to_uplink(data)
+        # Downlink: prefer GATT notify broadcast to subscribers
+        try:
+            if self.ble_gatt_server is not None:
+                await self.ble_gatt_server.notify_all(data)
+                return True
+        except Exception:
+            pass
+        # Fallback to BLEManager downlink client if available
+        if self.ble_manager:
+            return await self.ble_manager.send_to_downlink(neighbor_nid, data)
+        return False
+
+    async def _initiate_link_auth(self, neighbor_nid: str) -> bool:
+        """Initiate mutual authentication + session key establishment with an adjacent neighbor."""
+        if not self.private_key or not self._our_cert_pem or not self.ca_certificate:
+            return False
+        if neighbor_nid in self.link_sessions:
+            return True
+
+        auth1, eph_priv, nonce_a = build_link_auth1(self._our_cert_pem, self.private_key)
+        # Save initiator state so we can validate AUTH2
+        self._pending_auth1_state[neighbor_nid] = {
+            "eph_priv": eph_priv,
+            "eph_pub": __import__("base64").b64decode(auth1["eph_pub_b64"]),
+            "nonce_a": nonce_a,
+        }
+
+        fut = asyncio.get_event_loop().create_future()
+        self._pending_auth2[neighbor_nid] = fut
+
+        ok = await self._send_plain_to_neighbor(neighbor_nid, auth1)
+        if not ok:
+            self._pending_auth2.pop(neighbor_nid, None)
+            self._pending_auth1_state.pop(neighbor_nid, None)
+            return False
+
+        try:
+            auth2 = await asyncio.wait_for(fut, timeout=8.0)
+        except Exception:
+            self._pending_auth2.pop(neighbor_nid, None)
+            self._pending_auth1_state.pop(neighbor_nid, None)
+            return False
+
+        state = self._pending_auth1_state.pop(neighbor_nid, None)
+        self._pending_auth2.pop(neighbor_nid, None)
+        if not state:
+            return False
+
+        validated = validate_auth2(auth2, self.ca_certificate, state["eph_pub"], state["nonce_a"])
+        if not validated:
+            return False
+        peer_nid, _peer_pub, peer_eph_pub, nonce_b = validated
+        if peer_nid != neighbor_nid:
+            return False
+
+        key = derive_link_key(state["eph_priv"], peer_eph_pub, state["nonce_a"], nonce_b)
+        self.link_sessions[neighbor_nid] = LinkSession(peer_nid=neighbor_nid, key=key)
+        return True
 
     def _on_uplink_lost(self, address: str):
         """Callback called by BLE manager when uplink disconnects."""
@@ -182,9 +355,62 @@ class IoTNode:
 
     # --- LÓGICA DE LIVENESS ---
 
+    def _check_sink_change(self, heartbeat_msg: Dict) -> bool:
+        """
+        FEATURE BÓNUS - Múltiplos Sinks:
+        Verifica se o Sink da rede mudou comparando o source_nid do heartbeat.
+        
+        Se o Sink mudou:
+        1. Invalida todas as sessões E2E (DTLS-like)
+        2. Atualiza o sink_nid atual
+        3. Retorna True para indicar mudança
+        
+        Returns:
+            True se o Sink mudou, False caso contrário
+        """
+        hb_source_nid = heartbeat_msg.get("source_nid")
+        if not hb_source_nid:
+            return False
+        
+        # Se ainda não temos um Sink conhecido, aceitar este
+        if not self._current_network_sink_nid:
+            self._current_network_sink_nid = hb_source_nid
+            print(f"[{self.name}] 🔗 Sink da rede identificado: {hb_source_nid[:8]}...")
+            return False
+        
+        # Verificar se o Sink mudou
+        if hb_source_nid != self._current_network_sink_nid:
+            old_sink = self._current_network_sink_nid[:8]
+            new_sink = hb_source_nid[:8]
+            print(f"[{self.name}] ⚠️ SINK MUDOU: {old_sink}... → {new_sink}...")
+            
+            # Invalidar todas as sessões E2E com o Sink antigo
+            old_sessions = [k for k in self.e2e_sessions.keys() if k[0] == self._current_network_sink_nid]
+            for session_key in old_sessions:
+                del self.e2e_sessions[session_key]
+                print(f"[{self.name}] 🗑️ Sessão E2E invalidada: client_id={session_key[1]}")
+            
+            # Atualizar o Sink atual
+            self._current_network_sink_nid = hb_source_nid
+            self.sink_nid = hb_source_nid
+            
+            return True
+        
+        return False
+
     def process_heartbeat(self, heartbeat_msg: Dict):
-        """ Verifica a assinatura do HB e reinicia o contador de perdas. """
-        if not self.uplink_nid or self.hop_count == DISCONNECTED_HOP_COUNT: return
+        """
+        Verifica a assinatura do HB e reinicia o contador de perdas.
+        
+        FEATURE BÓNUS: Também verifica se o Sink mudou (multi-sink support).
+        """
+        if not self.uplink_nid or self.hop_count == DISCONNECTED_HOP_COUNT: 
+            return
+        
+        # Verificar mudança de Sink (Feature Bónus)
+        sink_changed = self._check_sink_change(heartbeat_msg)
+        if sink_changed:
+            print(f"[{self.name}] ℹ️ Sessões E2E serão re-estabelecidas na próxima comunicação")
             
         if self.sink_certificate:
             sink_public_key = self.sink_certificate.public_key()
@@ -204,7 +430,9 @@ class IoTNode:
             return
         
         # Prefer GATT server notification (for devices connected as centrals)
-        if self.ble_gatt_server:
+        # Note: BlueZGattServer notifications are broadcast to subscribers; per-downlink
+        # blocking cannot be enforced in that mode.
+        if self.ble_gatt_server and not self.blocked_heartbeat_downlinks:
             try:
                 hb_json = json.dumps(heartbeat_msg)
                 hb_bytes = hb_json.encode('utf-8')
@@ -217,6 +445,8 @@ class IoTNode:
                 hb_json = json.dumps(heartbeat_msg)
                 hb_bytes = hb_json.encode('utf-8')
                 for downlink_nid in list(self.downlinks.keys()):
+                    if downlink_nid in self.blocked_heartbeat_downlinks:
+                        continue
                     try:
                         success = await self.ble_manager.send_to_downlink(downlink_nid, hb_bytes)
                         if not success:
@@ -225,6 +455,16 @@ class IoTNode:
                         print(f"[{self.name}] Erro ao enviar HB para {downlink_nid[:8]}...: {e}")
             except Exception as e:
                 print(f"[{self.name}] Erro ao serializar HB: {e}")
+
+    def block_heartbeat_to_downlink(self, downlink_nid: str) -> None:
+        """Network control (sec. 4): stop forwarding heartbeats to a direct downlink."""
+        self.blocked_heartbeat_downlinks.add(downlink_nid)
+
+    def unblock_heartbeat_to_downlink(self, downlink_nid: str) -> None:
+        self.blocked_heartbeat_downlinks.discard(downlink_nid)
+
+    def list_blocked_heartbeats(self) -> list[str]:
+        return sorted(self.blocked_heartbeat_downlinks)
 
     async def check_liveness(self):
         """ Verifica se o Uplink falhou (Heartbeat Perdido). """
@@ -274,6 +514,62 @@ class IoTNode:
     def process_incoming_message(self, message: Dict, source_link_nid: str):
         source_nid = message.get("source_nid") 
 
+        # --- Link authentication handshake (plain) ---
+        if message.get("type") == "LINK_AUTH1":
+            if not self.private_key or not self._our_cert_pem or not self.ca_certificate:
+                return
+            validated = validate_auth1(message, self.ca_certificate)
+            if not validated:
+                return
+            peer_nid, _peer_pub, peer_eph_pub, peer_nonce = validated
+            # Respond with AUTH2 and establish session
+            auth2, eph_priv_b, nonce_b = build_link_auth2(self._our_cert_pem, self.private_key, peer_eph_pub, peer_nonce)
+            try:
+                key = derive_link_key(eph_priv_b, peer_eph_pub, peer_nonce, nonce_b)
+                self.link_sessions[peer_nid] = LinkSession(peer_nid=peer_nid, key=key)
+            except Exception:
+                return
+            # Ensure link bookkeeping
+            if peer_nid and peer_nid != self.uplink_nid:
+                self.downlinks.setdefault(peer_nid, True)
+            try:
+                asyncio.create_task(self._send_plain_to_neighbor(peer_nid, auth2))
+            except Exception:
+                pass
+            return
+
+        if message.get("type") == "LINK_AUTH2":
+            peer_nid = None
+            try:
+                # Determine peer NID from certificate inside AUTH2
+                if self.ca_certificate:
+                    parsed = __import__("base64").b64decode(message.get("cert_pem_b64", ""))
+                    cert = x509.load_pem_x509_certificate(parsed)
+                    peer_nid_attr = cert.subject.get_attributes_for_oid(x509.NameOID.USER_ID)[-1]
+                    peer_nid = peer_nid_attr.value
+            except Exception:
+                peer_nid = None
+            if peer_nid and peer_nid in self._pending_auth2:
+                fut = self._pending_auth2.get(peer_nid)
+                if fut and not fut.done():
+                    fut.set_result(message)
+            return
+
+        # --- Per-link authenticated wrapper ---
+        if message.get("type") == "LINK_SECURE":
+            link_sender = message.get("link_sender_nid")
+            if not link_sender:
+                return
+            session = self.link_sessions.get(link_sender)
+            if not session:
+                return
+            inner = unwrap_link_secure(session, message)
+            if not inner:
+                return
+            message = inner
+            source_link_nid = link_sender
+            source_nid = message.get("source_nid")
+
         # Handle registration messages from newly-connected centrals (needs only source_nid)
         if message.get("type") == "REGISTER":
             if source_nid and source_nid not in self.downlinks:
@@ -288,14 +584,44 @@ class IoTNode:
         if not source_nid or not destination_nid: 
             return
 
+        # If addressed to us, handle end-to-end control/data first
+        if destination_nid == self.nid:
+            if message.get("type") == "E2E_HELLO2":
+                try:
+                    client_id = int(message.get("client_id"))
+                except Exception:
+                    return
+                fut = self._pending_e2e_hello2.get(client_id)
+                if fut and not fut.done():
+                    fut.set_result(message)
+                return
+
+            if message.get("type") == "E2E_SECURE":
+                try:
+                    client_id = int(message.get("client_id"))
+                except Exception:
+                    return
+                if not self.sink_nid:
+                    return
+                session = self.e2e_sessions.get((self.sink_nid, client_id))
+                if not session:
+                    return
+                record = message.get("record")
+                if not isinstance(record, dict):
+                    return
+                inner = unwrap_e2e_record(session, record)
+                if not inner:
+                    return
+                if inner.get("service") == "inbox":
+                    print(f"[{self.name}] 📥 Inbox: {inner}")
+                return
+
         # Checagem de Heartbeat
         if message.get("is_heartbeat", False):
             self.process_heartbeat(message)
             return
 
-        # Mensagens de dados (DTLS Inbox) não são usadas neste projeto
-        if message.get("type") == "DTLS_INBOX":
-            return
+        # Mensagens de dados (DTLS Inbox) agora passam pelo roteamento (end-to-end)
 
         # 1. Atualizar Tabela de Encaminhamento
         self.update_forwarding_table(source_nid, source_link_nid)
@@ -305,15 +631,117 @@ class IoTNode:
             return
 
         # A) Roteamento UPSTREAM (Em direção ao Sink)
-        if destination_nid == self.uplink_nid: 
-            if source_link_nid != self.uplink_nid: 
-                self.messages_routed_uplink += 1 
+        if self.uplink_nid and self.sink_nid and destination_nid == self.sink_nid:
+            if source_link_nid != self.uplink_nid:
+                self.messages_routed_uplink += 1
+            try:
+                asyncio.create_task(self._send_secure_to_neighbor(self.uplink_nid, message))
+            except Exception:
+                pass
             return
-            
+
         # B) Roteamento DOWNSTREAM (Pesquisa na FT)
         if destination_nid in self.forwarding_table:
             next_hop = self.forwarding_table[destination_nid]
+            if next_hop != source_link_nid:
+                try:
+                    asyncio.create_task(self._send_secure_to_neighbor(next_hop, message))
+                except Exception:
+                    pass
             return
+
+    async def ensure_e2e_session(self, client_id: int) -> bool:
+        """Establish an end-to-end secure session with the Sink (DTLS-like).
+
+        Runs over the routed network; routers do not touch E2E payloads.
+        """
+        if not self.private_key or not self._our_cert_pem or not self.ca_certificate:
+            return False
+        if not self.sink_nid or not self.uplink_nid:
+            return False
+
+        session_key = (self.sink_nid, int(client_id))
+        if session_key in self.e2e_sessions:
+            return True
+
+        hello1, eph_priv, nonce_a = build_e2e_hello1(self._our_cert_pem, self.private_key, int(client_id))
+        hello1_msg = {
+            **hello1,
+            "source_nid": self.nid,
+            "destination_nid": self.sink_nid,
+        }
+
+        self._pending_e2e_state[int(client_id)] = {
+            "eph_priv": eph_priv,
+            "eph_pub": __import__("base64").b64decode(hello1["eph_pub_b64"]),
+            "nonce_a": nonce_a,
+        }
+        fut = asyncio.get_event_loop().create_future()
+        self._pending_e2e_hello2[int(client_id)] = fut
+
+        ok = await self._send_secure_to_neighbor(self.uplink_nid, hello1_msg)
+        if not ok:
+            self._pending_e2e_state.pop(int(client_id), None)
+            self._pending_e2e_hello2.pop(int(client_id), None)
+            return False
+
+        try:
+            hello2 = await asyncio.wait_for(fut, timeout=12.0)
+        except Exception:
+            self._pending_e2e_state.pop(int(client_id), None)
+            self._pending_e2e_hello2.pop(int(client_id), None)
+            return False
+
+        state = self._pending_e2e_state.pop(int(client_id), None)
+        self._pending_e2e_hello2.pop(int(client_id), None)
+        if not state or not self.ca_certificate:
+            return False
+
+        validated = validate_hello2(
+            hello2,
+            self.ca_certificate,
+            expected_client_id=int(client_id),
+            expected_peer_eph_pub=state["eph_pub"],
+            expected_peer_nonce=state["nonce_a"],
+        )
+        if not validated:
+            return False
+
+        peer_nid, _cid, peer_eph_pub, nonce_b = validated
+        if peer_nid != self.sink_nid:
+            return False
+
+        key = derive_e2e_key(state["eph_priv"], peer_eph_pub, state["nonce_a"], nonce_b, int(client_id))
+        self.e2e_sessions[session_key] = E2ESession(peer_nid=self.sink_nid, client_id=int(client_id), key=key)
+        return True
+
+    async def send_inbox_message(self, text: str, client_id: Optional[int] = None) -> bool:
+        """Send an Inbox message to the Sink protected end-to-end."""
+        if not self.sink_nid or not self.uplink_nid:
+            return False
+        if client_id is None:
+            client_id = int.from_bytes(os.urandom(4), "big")
+
+        ok = await self.ensure_e2e_session(int(client_id))
+        if not ok:
+            print(f"[{self.name}] ⚠️ Falha ao estabelecer sessão E2E com o Sink")
+            return False
+
+        session = self.e2e_sessions[(self.sink_nid, int(client_id))]
+        app_payload = {
+            "service": "inbox",
+            "from_nid": self.nid,
+            "message": text,
+        }
+        record = wrap_e2e_record(session, app_payload)
+        outer = {
+            "type": "E2E_SECURE",
+            "client_id": int(client_id),
+            "record": record,
+            "source_nid": self.nid,
+            "destination_nid": self.sink_nid,
+        }
+        return await self._send_secure_to_neighbor(self.uplink_nid, outer)
             
     # --- Funções de Publicidade e Descoberta (Mantidas) ---
     def calculate_advertisement_data(self) -> bytes:
@@ -388,6 +816,13 @@ class IoTNode:
                 self.ble_advertiser.update_hop_count(self.hop_count)
             
             print(f"[{self.name}] ✅ Conectado ao Uplink. Novo Hop Count: {self.hop_count}")
+            # Establish per-link authenticated session (mutual auth + session key)
+            try:
+                auth_ok = await self._initiate_link_auth(uplink_nid)
+            except Exception:
+                auth_ok = False
+            if not auth_ok:
+                print(f"[{self.name}] ⚠️ Falha na autenticação mútua com o uplink {uplink_nid[:8]}... (sessão não estabelecida)")
             # After hop update, give BlueZ a brief moment to publish adv
             try:
                 await asyncio.sleep(0.2)

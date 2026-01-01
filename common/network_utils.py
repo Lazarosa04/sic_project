@@ -5,6 +5,13 @@ from typing import Optional
 # A constante necessária para importação:
 SIC_SERVICE_UUID = "d227d8e8-d4d1-4475-a835-189f7823f64c" 
 
+# Simple application-level BLE fragmentation flags (1 byte prefix)
+# 0x01: single frame; 0x02: start; 0x03: middle; 0x04: end
+BLE_FRAG_SINGLE = 0x01
+BLE_FRAG_START = 0x02
+BLE_FRAG_MIDDLE = 0x03
+BLE_FRAG_END = 0x04
+
 def string_nid_to_bytes(nid_str: str) -> bytes:
     """Converte o NID string (UUID) para 16 bytes."""
     try:

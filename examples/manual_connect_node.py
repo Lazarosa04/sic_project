@@ -12,7 +12,10 @@ Commands (type at prompt):
   connect <idx|nid>   - connect to device by index (from list) or NID
   disconnect          - disconnect uplink
   status              - print node status
-    # DTLS Inbox desativado neste projeto; apenas Heartbeats da Sink
+    send_inbox <text>    - send Inbox message to Sink (end-to-end protected)
+    stop_hb <down_nid>   - stop forwarding heartbeats to a direct downlink
+    start_hb <down_nid>  - resume forwarding heartbeats to a downlink
+    blocked_hb           - list blocked downlinks
   quit / exit         - exit and cleanup
 
 This script uses `IoTNode` and the BLE manager already present in the project.
@@ -62,7 +65,7 @@ async def interactive_loop(node: IoTNode):
             break
 
         if cmd == 'help':
-            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, quit")
+            print("Commands: help, scan [secs], list, connect <idx|nid>, disconnect, status, send_inbox <text>, stop_hb <nid>, start_hb <nid>, blocked_hb, quit")
             continue
 
         if cmd == 'scan':
@@ -134,7 +137,48 @@ async def interactive_loop(node: IoTNode):
             node.print_status()
             continue
 
-        # send_inbox command removed: not supported in this project
+        if cmd == 'send_inbox':
+            if len(parts) < 2:
+                print('Usage: send_inbox <text>')
+                continue
+            text = cmdline[len('send_inbox'):].strip()
+            if not text:
+                print('Usage: send_inbox <text>')
+                continue
+            try:
+                ok = await node.send_inbox_message(text)
+                print('Inbox sent.' if ok else 'Failed to send Inbox.')
+            except Exception as e:
+                print(f'Error sending Inbox: {e}')
+            continue
+
+        if cmd == 'stop_hb':
+            if len(parts) < 2:
+                print('Usage: stop_hb <downlink_nid>')
+                continue
+            nid = parts[1]
+            node.block_heartbeat_to_downlink(nid)
+            print(f'Blocked heartbeat forwarding to {nid[:8]}...')
+            continue
+
+        if cmd == 'start_hb':
+            if len(parts) < 2:
+                print('Usage: start_hb <downlink_nid>')
+                continue
+            nid = parts[1]
+            node.unblock_heartbeat_to_downlink(nid)
+            print(f'Unblocked heartbeat forwarding to {nid[:8]}...')
+            continue
+
+        if cmd == 'blocked_hb':
+            blocked = node.list_blocked_heartbeats()
+            if not blocked:
+                print('No blocked downlinks.')
+            else:
+                print('Blocked downlinks:')
+                for b in blocked:
+                    print(f'  - {b}')
+            continue
 
         print('Unknown command. Type help.')
 
