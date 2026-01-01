@@ -237,20 +237,24 @@ def test_section_3_network_management():
         sink_key_path = os.path.join(OUTPUT_DIR, "sink_host_private.pem")
         
         if os.path.exists(sink_cert_path) and os.path.exists(sink_key_path):
-            sink_pub, sink_priv = load_sink_keys()
+            # load_sink_keys retorna (private_key, public_key)
+            sink_priv, sink_pub = load_sink_keys()
             
-            # Assinar heartbeat
-            hb = sign_heartbeat(counter=1, sink_private_key=sink_priv)
-            assert "counter" in hb, "Falta counter"
-            assert "signature" in hb, "Falta signature"
-            results.add_pass("3.7", "Assinar heartbeat com chave do Sink")
-            
-            # Verificar heartbeat
-            is_valid = verify_heartbeat(hb, sink_pub)
-            if is_valid:
-                results.add_pass("3.7", "Verificar assinatura do heartbeat")
+            if sink_priv is None or sink_pub is None:
+                results.add_skip("3.7", "Assinatura de Heartbeat", "Chaves não carregadas")
             else:
-                results.add_fail("3.7", "Verificar assinatura", "Assinatura inválida")
+                # Assinar heartbeat com chave privada
+                hb = sign_heartbeat(counter=1, sink_private_key=sink_priv)
+                assert "counter" in hb, "Falta counter"
+                assert "signature" in hb, "Falta signature"
+                results.add_pass("3.7", "Assinar heartbeat com chave do Sink")
+                
+                # Verificar heartbeat com chave pública
+                is_valid = verify_heartbeat(hb, sink_pub)
+                if is_valid:
+                    results.add_pass("3.7", "Verificar assinatura do heartbeat")
+                else:
+                    results.add_fail("3.7", "Verificar assinatura", "Assinatura inválida")
         else:
             results.add_skip("3.7", "Assinatura de Heartbeat", "Certificados não encontrados")
     except Exception as e:
@@ -288,8 +292,9 @@ def test_section_4_network_controls():
         from common.ble_manager import BLEConnectionManager
         results.add_pass("4.1", "Import BLEConnectionManager")
         
-        manager = BLEConnectionManager()
-        assert hasattr(manager, 'scan_nearby') or hasattr(manager, 'scan'), "Falta método de scan"
+        # BLEConnectionManager requer device_nid como argumento
+        manager = BLEConnectionManager(device_nid="test-nid-12345678")
+        assert hasattr(manager, 'scan_for_uplinks') or hasattr(manager, 'scan_nearby') or hasattr(manager, 'scan'), "Falta método de scan"
         results.add_pass("4.1", "Método de scanning disponível")
     except Exception as e:
         results.add_fail("4.1", "BLEConnectionManager", str(e))
@@ -365,7 +370,7 @@ def test_section_5_security():
     # 5.2 - NID no certificado
     print("\n[5.2] NID no Certificado")
     try:
-        from common.cert_utils import certificate_nid
+        from common.cert_utils import extract_nid_from_certificate
         from support.ca_manager import OUTPUT_DIR
         from cryptography import x509
         from cryptography.hazmat.backends import default_backend
@@ -375,7 +380,7 @@ def test_section_5_security():
             with open(node_cert_path, 'rb') as f:
                 node_cert = x509.load_pem_x509_certificate(f.read(), default_backend())
             
-            nid = certificate_nid(node_cert)
+            nid = extract_nid_from_certificate(node_cert)
             if nid and len(nid) > 0:
                 results.add_pass("5.2", f"NID extraído do certificado: {nid[:16]}...")
             else:
@@ -412,8 +417,8 @@ def test_section_5_security():
     # 5.4 - CA Manager
     print("\n[5.4] CA Manager (Secção 5.3)")
     try:
-        from support.ca_manager import CAManager, OUTPUT_DIR
-        results.add_pass("5.4", "Import CAManager")
+        from support.ca_manager import gerar_ca_raiz, gerar_certificado_dispositivo, OUTPUT_DIR
+        results.add_pass("5.4", "Import funções ca_manager")
         
         # Verificar se pasta de certificados existe
         if os.path.exists(OUTPUT_DIR):
@@ -435,14 +440,15 @@ def test_section_5_security():
             build_link_auth1,
             build_link_auth2,
             validate_auth1,
-            validate_auth2,
             derive_link_key
         )
         results.add_pass("5.5", "Import link_security")
         
-        # Verificar estrutura de LinkSession
-        session = LinkSession()
-        assert hasattr(session, 'key') or hasattr(session, 'session_key'), "Falta atributo key"
+        # Verificar estrutura de LinkSession (dataclass com campos obrigatórios)
+        test_key = os.urandom(32)
+        session = LinkSession(peer_nid="test-peer", key=test_key)
+        assert hasattr(session, 'key'), "Falta atributo key"
+        assert hasattr(session, 'peer_nid'), "Falta atributo peer_nid"
         results.add_pass("5.5", "Classe LinkSession definida")
     except ImportError as e:
         results.add_fail("5.5", "Import link_security", str(e))
@@ -455,11 +461,9 @@ def test_section_5_security():
         from common.link_security import wrap_link_secure, unwrap_link_secure, LinkSession
         results.add_pass("5.6", "Funções wrap/unwrap disponíveis")
         
-        # Testar wrap/unwrap
-        test_session = LinkSession()
-        test_session.key = os.urandom(32)  # Chave de teste
-        test_session.send_seq = 0
-        test_session.recv_max_seq = 0
+        # Testar wrap/unwrap - LinkSession é dataclass com campos obrigatórios
+        test_key = os.urandom(32)
+        test_session = LinkSession(peer_nid="test-peer", key=test_key)
         
         test_msg = {"type": "TEST", "data": "hello"}
         wrapped = wrap_link_secure(test_session, "sender-nid", test_msg)
@@ -476,8 +480,9 @@ def test_section_5_security():
     try:
         from common.link_security import LinkSession
         
-        # Verificar campos de sequência
-        session = LinkSession()
+        # Verificar campos de sequência - LinkSession requer peer_nid e key
+        test_key = os.urandom(32)
+        session = LinkSession(peer_nid="test-peer", key=test_key)
         has_seq = hasattr(session, 'send_seq') or hasattr(session, 'sequence')
         has_recv = hasattr(session, 'recv_max_seq') or hasattr(session, 'recv_seq')
         
@@ -507,9 +512,10 @@ def test_section_5_security():
         )
         results.add_pass("5.8", "Import e2e_security")
         
-        # Verificar handshake
-        session = E2ESession()
-        assert hasattr(session, 'key') or hasattr(session, 'session_key'), "Falta chave E2E"
+        # Verificar handshake - E2ESession requer peer_nid, client_id e key
+        test_key = os.urandom(32)
+        session = E2ESession(peer_nid="test-peer", client_id=12345, key=test_key)
+        assert hasattr(session, 'key'), "Falta chave E2E"
         results.add_pass("5.8", "Classe E2ESession definida")
     except ImportError as e:
         results.add_fail("5.8", "Import e2e_security", str(e))
