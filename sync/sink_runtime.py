@@ -112,28 +112,28 @@ async def interactive_loop(sink: SinkHost):
                 except Exception:
                     print('Duração inválida; usando 5s')
             try:
-                print(f"\n🔍 Scanning por {secs}s...")
+                print(f"\nScanning por {secs}s...")
                 results = await sink.scan_nearby(duration=secs)
                 scan_results = results
                 if not results:
-                    print('❌ Nenhum dispositivo encontrado.')
+                    print('Nenhum dispositivo encontrado.')
                 else:
-                    print(f"\n✅ {len(results)} dispositivo(s) encontrado(s):")
+                    print(f"\n{len(results)} dispositivo(s) encontrado(s):")
                     print("-" * 50)
                     for i, (nid, hop) in enumerate(results.items()):
                         hop_str = f"hop={hop}" if hop >= 0 else "hop=N/A (desconectado)"
                         print(f"[{i}] {nid} ({hop_str})")
                     print("-" * 50)
             except Exception as e:
-                print(f"❌ Scan falhou: {e}")
+                print(f"Scan falhou: {e}")
             continue
 
         # ==================== LIST ====================
         if cmd == 'list':
             if not scan_results:
-                print('⚠️ Sem resultados de scan. Execute "scan" primeiro.')
+                print('Sem resultados de scan. Execute "scan" primeiro.')
             else:
-                print(f"\n📋 Últimos resultados do scan ({len(scan_results)} dispositivos):")
+                print(f"\nÚltimos resultados do scan ({len(scan_results)} dispositivos):")
                 print("-" * 50)
                 for i, (nid, hop) in enumerate(scan_results.items()):
                     hop_str = f"hop={hop}" if hop >= 0 else "hop=N/A"
@@ -153,20 +153,20 @@ async def interactive_loop(sink: SinkHost):
                 try:
                     target_nid = list(scan_results.keys())[idx]
                 except Exception:
-                    print('❌ Índice fora de alcance ou sem resultados de scan.')
+                    print('Índice fora de alcance ou sem resultados de scan.')
                     continue
             else:
                 target_nid = target
 
-            print(f'🔗 Conectando a {target_nid[:8]}...')
+            print(f'Conectando a {target_nid[:8]}...')
             try:
                 ok = await sink.connect_downlink(target_nid)
                 if ok:
-                    print(f'✅ Conectado a {target_nid[:8]}...')
+                    print(f'Conectado a {target_nid[:8]}...')
                 else:
-                    print(f'❌ Falha ao conectar.')
+                    print(f'Falha ao conectar.')
             except Exception as e:
-                print(f'❌ Erro: {e}')
+                print(f'Erro: {e}')
             continue
 
         # ==================== STOP_HB (Sec. 4) ====================
@@ -179,7 +179,7 @@ async def interactive_loop(sink: SinkHost):
             if nid.isdigit() and int(nid) < len(list(sink.downlinks.keys())):
                 nid = list(sink.downlinks.keys())[int(nid)]
             sink.stop_heartbeat_to(nid)
-            print(f'🚫 Heartbeat bloqueado para {nid[:8]}...')
+            print(f'Heartbeat bloqueado para {nid[:8]}...')
             continue
 
         # ==================== START_HB (Sec. 4) ====================
@@ -191,16 +191,16 @@ async def interactive_loop(sink: SinkHost):
             if nid.isdigit() and int(nid) < len(list(sink.downlinks.keys())):
                 nid = list(sink.downlinks.keys())[int(nid)]
             sink.start_heartbeat_to(nid)
-            print(f'✅ Heartbeat desbloqueado para {nid[:8]}...')
+            print(f'Heartbeat desbloqueado para {nid[:8]}...')
             continue
 
         # ==================== BLOCKED_HB ====================
         if cmd == 'blocked_hb':
             blocked = sorted(list(sink.blocked_heartbeat_downlinks))
             if not blocked:
-                print('✅ Nenhum downlink bloqueado.')
+                print('Nenhum downlink bloqueado.')
             else:
-                print(f'\n🚫 Downlinks com heartbeat bloqueado ({len(blocked)}):')
+                print(f'\nDownlinks com heartbeat bloqueado ({len(blocked)}):')
                 for b in blocked:
                     print(f'  - {b}')
             continue
@@ -209,9 +209,9 @@ async def interactive_loop(sink: SinkHost):
         if cmd == 'inbox':
             msgs = sink.inbox_messages
             if not msgs:
-                print('📭 Inbox vazia.')
+                print('Inbox vazia.')
             else:
-                print(f'\n📬 Inbox ({len(msgs)} mensagens):')
+                print(f'\nInbox ({len(msgs)} mensagens):')
                 print("-" * 60)
                 for i, m in enumerate(msgs[-20:], 1):
                     frm = (m.get('from_nid') or 'UNKNOWN')[:8]
@@ -219,7 +219,7 @@ async def interactive_loop(sink: SinkHost):
                     msg = m.get('message', '')
                     cid = m.get('client_id', 'N/A')
                     print(f"[{i}] {ts} | De: {frm}... | client_id={cid}")
-                    print(f"    📝 {msg}")
+                    print(f"    {msg}")
                 print("-" * 60)
             continue
 
@@ -232,9 +232,9 @@ async def interactive_loop(sink: SinkHost):
         if cmd == 'ft':
             ft = sink.forwarding_table
             if not ft:
-                print('📋 Forwarding table vazia.')
+                print('Forwarding table vazia.')
             else:
-                print(f'\n📋 Forwarding Table ({len(ft)} entradas):')
+                print(f'\nForwarding Table ({len(ft)} entradas):')
                 print("-" * 60)
                 print(f"{'Destination':<40} {'Next Hop':<20}")
                 print("-" * 60)
@@ -243,7 +243,7 @@ async def interactive_loop(sink: SinkHost):
                 print("-" * 60)
             continue
 
-        print(f'❓ Comando desconhecido: {cmd}. Digite "help" para ajuda.')
+        print(f'Comando desconhecido: {cmd}. Digite "help" para ajuda.')
 
 
 async def heartbeat_loop(sink: SinkHost):
@@ -274,12 +274,12 @@ async def main(adapter: str = None):
             if hasattr(advertiser, 'start') and asyncio.iscoroutinefunction(advertiser.start):
                 await advertiser.start()
                 started_advertiser = True
-                print(f"✅ Advertiser iniciado (adapter={sink.adapter})")
+                print(f"Advertiser iniciado (adapter={sink.adapter})")
             elif hasattr(advertiser, 'start_advertising') and asyncio.iscoroutinefunction(advertiser.start_advertising):
                 await advertiser.start_advertising()
                 started_advertiser = True
     except Exception as e:
-        print(f"⚠️ Advertiser não iniciado: {e}")
+        print(f"Advertiser não iniciado: {e}")
 
     # Iniciar GATT server
     gatt = getattr(sink, 'ble_gatt_server', None)
@@ -288,12 +288,12 @@ async def main(adapter: str = None):
         try:
             await gatt.start()
             started_gatt = True
-            print(f"✅ GATT server iniciado")
+            print(f"GATT server iniciado")
         except Exception as e:
-            print(f"⚠️ GATT server não iniciado: {e}")
+            print(f"GATT server não iniciado: {e}")
 
-    print(f"\n📡 Sink NID: {sink.nid}")
-    print(f"⏱️ Heartbeat interval: {HEARTBEAT_PACING_SECONDS}s\n")
+    print(f"\nSink NID: {sink.nid}")
+    print(f"Heartbeat interval: {HEARTBEAT_PACING_SECONDS}s\n")
 
     # Iniciar loop de heartbeat em background
     hb_task = asyncio.create_task(heartbeat_loop(sink))
@@ -333,4 +333,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main(adapter=args.adapter))
     except KeyboardInterrupt:
-        print('\n\n👋 Sink encerrado pelo utilizador.')
+        print('\n\nSink encerrado pelo utilizador.')

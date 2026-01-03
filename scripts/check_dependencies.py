@@ -12,13 +12,13 @@ import sys
 def check_python_version():
     """Verifica se a versão do Python é adequada"""
     version = sys.version_info
-    print(f"🐍 Python {version.major}.{version.minor}.{version.micro}")
+    print(f"Python {version.major}.{version.minor}.{version.micro}")
     
     if version.major < 3 or (version.major == 3 and version.minor < 8):
-        print("❌ ERRO: Python 3.8+ é necessário")
+        print("ERRO: Python 3.8+ é necessário")
         return False
     
-    print("✅ Versão do Python adequada")
+    print("Versão do Python adequada")
     return True
 
 
@@ -33,16 +33,16 @@ def check_package(package_name):
 
 def install_requirements():
     """Instala dependências do requirements.txt"""
-    print("\n📦 Instalando dependências...")
+    print("\nInstalando dependências...")
     
     try:
         subprocess.check_call([
             sys.executable, "-m", "pip", "install", "-r", "requirements.txt"
         ])
-        print("✅ Dependências instaladas com sucesso")
+        print("Dependências instaladas com sucesso")
         return True
     except subprocess.CalledProcessError:
-        print("❌ ERRO ao instalar dependências")
+        print("ERRO ao instalar dependências")
         return False
 
 
@@ -56,7 +56,7 @@ def check_dependencies():
     if not check_python_version():
         return False
     
-    print("\n📋 Verificando pacotes necessários...\n")
+    print("\nVerificando pacotes necessários...\n")
     
     packages = {
         "cryptography": "Criptografia (ECDSA, X.509)",
@@ -70,19 +70,19 @@ def check_dependencies():
             try:
                 module = __import__(package)
                 version = getattr(module, "__version__", "desconhecida")
-                print(f"✅ {package:20s} v{version:10s} - {description}")
+                print(f"{package:20s} v{version:10s} - {description}")
             except Exception:
-                print(f"✅ {package:20s} (instalado)    - {description}")
+                print(f"{package:20s} (instalado)    - {description}")
         else:
-            print(f"❌ {package:20s} (AUSENTE)      - {description}")
+            print(f"{package:20s} (AUSENTE)      - {description}")
             missing.append(package)
     
     if missing:
-        print(f"\n⚠️  {len(missing)} pacote(s) ausente(s): {', '.join(missing)}")
-        print("\n🔧 Instalando pacotes ausentes...\n")
+        print(f"\n{len(missing)} pacote(s) ausente(s): {', '.join(missing)}")
+        print("\nInstalando pacotes ausentes...\n")
         return install_requirements()
     else:
-        print("\n✅ Todas as dependências estão instaladas!")
+        print("\nTodas as dependências estão instaladas!")
         return True
 
 
@@ -90,7 +90,7 @@ def check_certificates():
     """Verifica se os certificados foram gerados"""
     import os
     
-    print("\n🔐 Verificando certificados...")
+    print("\nVerificando certificados...")
     
     cert_dir = "support/certs"
     required_files = [
@@ -101,7 +101,7 @@ def check_certificates():
     ]
     
     if not os.path.exists(cert_dir):
-        print(f"❌ Diretório {cert_dir} não existe")
+        print(f"Diretório {cert_dir} não existe")
         print("   Execute: python3 support/ca_manager.py")
         return False
     
@@ -109,17 +109,17 @@ def check_certificates():
     for cert_file in required_files:
         path = os.path.join(cert_dir, cert_file)
         if os.path.exists(path):
-            print(f"✅ {cert_file}")
+            print(f"{cert_file}")
         else:
-            print(f"❌ {cert_file} (ausente)")
+            print(f"{cert_file} (ausente)")
             missing_certs.append(cert_file)
     
     if missing_certs:
-        print(f"\n⚠️  {len(missing_certs)} certificado(s) ausente(s)")
+        print(f"\n{len(missing_certs)} certificado(s) ausente(s)")
         print("   Execute: python3 support/ca_manager.py")
         return False
     else:
-        print("\n✅ Certificados gerados corretamente!")
+        print("\nCertificados gerados corretamente!")
         return True
 
 
@@ -127,7 +127,7 @@ def check_bluetooth():
     """Verifica se o Bluetooth está disponível"""
     import platform
     
-    print("\n📡 Verificando Bluetooth...")
+    print("\nVerificando Bluetooth...")
     
     system = platform.system()
     
@@ -140,36 +140,36 @@ def check_bluetooth():
             )
             
             if result.returncode == 0 and "hci0" in result.stdout:
-                print("✅ Adaptador Bluetooth encontrado (hci0)")
+                print("Adaptador Bluetooth encontrado (hci0)")
                 
                 if "UP RUNNING" in result.stdout:
-                    print("✅ Bluetooth está ativo")
+                    print("Bluetooth está ativo")
                 else:
-                    print("⚠️  Bluetooth não está ativo")
+                    print("Bluetooth não está ativo")
                     print("   Execute: sudo hciconfig hci0 up")
                 
                 return True
             else:
-                print("❌ Nenhum adaptador Bluetooth encontrado")
+                print("Nenhum adaptador Bluetooth encontrado")
                 return False
                 
         except FileNotFoundError:
-            print("⚠️  Comando 'hciconfig' não encontrado")
+            print("Comando 'hciconfig' não encontrado")
             print("   Instale: sudo apt-get install bluez")
             return False
     
     elif system == "Windows":
-        print("⚠️  Verificação automática não disponível no Windows")
+        print("Verificação automática não disponível no Windows")
         print("   Verifique manualmente: Configurações → Dispositivos → Bluetooth")
         return True
     
     elif system == "Darwin":  # macOS
-        print("⚠️  Verificação automática não disponível no macOS")
+        print("Verificação automática não disponível no macOS")
         print("   Verifique manualmente: Preferências do Sistema → Bluetooth")
         return True
     
     else:
-        print(f"⚠️  Sistema operacional não reconhecido: {system}")
+        print(f"Sistema operacional não reconhecido: {system}")
         return True
 
 
@@ -192,17 +192,17 @@ def main():
     # Resumo final
     print("\n" + "="*60)
     if all_ok:
-        print(" ✅ SISTEMA PRONTO PARA USO ".center(60))
+        print(" SISTEMA PRONTO PARA USO ".center(60))
         print("="*60)
-        print("\n🚀 Próximos passos:")
+        print("\nPróximos passos:")
         print("   1. python3 examples/quick_ble_test.py")
         print("   2. python3 examples/test_ble_connection.py")
         print("   3. python3 sink/sink_app.py")
     else:
-        print(" ⚠️  SISTEMA NECESSITA CONFIGURAÇÃO ".center(60))
+        print(" SISTEMA NECESSITA CONFIGURAÇÃO ".center(60))
         print("="*60)
-        print("\n🔧 Resolva os problemas acima antes de prosseguir")
-        print("📚 Consulte: QUICK_START.md")
+        print("\nResolva os problemas acima antes de prosseguir")
+        print("Consulte: QUICK_START.md")
     
     print("\n")
     return all_ok

@@ -22,7 +22,7 @@ try:
     BLESS_AVAILABLE = True
 except ImportError:
     BLESS_AVAILABLE = False
-    print("⚠️  Biblioteca 'bless' não instalada.")
+    print("Biblioteca 'bless' não instalada.")
     print("   Instale com: pip install bless")
 
 
@@ -42,7 +42,7 @@ async def advertise_with_bless(device_nid: str, hop_count: int, duration: int = 
     """
     
     if not BLESS_AVAILABLE:
-        print("❌ Não é possível fazer advertising sem a biblioteca 'bless'")
+        print("Não é possível fazer advertising sem a biblioteca 'bless'")
         return
     
     print(f"\n{'='*60}")
@@ -86,17 +86,17 @@ async def advertise_with_bless(device_nid: str, hop_count: int, duration: int = 
     # Definir manufacturer data para advertising
     server.advertise_manufacturer_data(SIC_MANUFACTURER_ID, manufacturer_data)
     
-    print(f"[ADV] ✅ Servidor GATT configurado")
+    print(f"[ADV] Servidor GATT configurado")
     print(f"[ADV] Serviço: {SIC_SERVICE_UUID}")
     print(f"[ADV] Característica: {SIC_DATA_CHARACTERISTIC_UUID}\n")
     
     # Iniciar advertising
-    print(f"[ADV] 📡 Iniciando advertising por {duration}s...")
+    print(f"[ADV] Iniciando advertising por {duration}s...")
     print(f"[ADV] Outros dispositivos podem escanear agora!\n")
     
     await server.start()
     
-    print(f"[ADV] ✨ ADVERTISING ATIVO!")
+    print(f"[ADV] ADVERTISING ATIVO!")
     print(f"[ADV] Execute em outro terminal/dispositivo:")
     print(f"      python3 examples/quick_ble_test.py\n")
     
@@ -104,10 +104,10 @@ async def advertise_with_bless(device_nid: str, hop_count: int, duration: int = 
     await asyncio.sleep(duration)
     
     # Parar advertising
-    print(f"\n[ADV] ⏸️  Parando advertising...")
+    print(f"\n[ADV] Parando advertising...")
     await server.stop()
     
-    print(f"[ADV] ✅ Advertising encerrado.")
+    print(f"[ADV] Advertising encerrado.")
 
 
 async def advertise_with_bluetoothctl(device_nid: str, hop_count: int):
@@ -118,7 +118,7 @@ async def advertise_with_bluetoothctl(device_nid: str, hop_count: int):
     print(f" ADVERTISING BLE - bluetoothctl (Manual) ".center(60))
     print(f"{'='*60}\n")
     
-    print("⚠️  Para fazer advertising manualmente com bluetoothctl:\n")
+    print("Para fazer advertising manualmente com bluetoothctl:\n")
     
     nid_bytes = uuid.UUID(device_nid).bytes
     hop_bytes = struct.pack('<i', hop_count)
@@ -160,18 +160,18 @@ async def main():
     
     # Verificar disponibilidade de bless
     if BLESS_AVAILABLE:
-        print("✅ Biblioteca 'bless' detectada")
-        print("🚀 Iniciando advertising com bless...\n")
+        print("Biblioteca 'bless' detectada")
+        print("Iniciando advertising com bless...\n")
         
         try:
             await advertise_with_bless(test_nid, test_hop, duration=60)
         except Exception as e:
-            print(f"\n❌ ERRO ao fazer advertising: {e}")
-            print("\n💡 Tente a alternativa manual com bluetoothctl:")
+            print(f"\nERRO ao fazer advertising: {e}")
+            print("\nTente a alternativa manual com bluetoothctl:")
             await advertise_with_bluetoothctl(test_nid, test_hop)
     else:
-        print("❌ Biblioteca 'bless' não disponível")
-        print("\n📋 Opções:\n")
+        print("Biblioteca 'bless' não disponível")
+        print("\nOpções:\n")
         print("1. Instalar bless:")
         print("   pip install bless\n")
         print("2. Ou usar bluetoothctl manualmente:")

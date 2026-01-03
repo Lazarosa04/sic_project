@@ -339,7 +339,7 @@ class SinkHost:
                 # direct link
                 if source_link_nid and source_link_nid != "UNKNOWN":
                     self.forwarding_table[source_nid] = source_link_nid
-                print(f"[{self.name}] ✅ Downlink registado: {source_nid[:8]}...")
+                print(f"[{self.name}] Downlink registado: {source_nid[:8]}...")
             return
 
         if message.get("is_heartbeat", False):
@@ -408,7 +408,7 @@ class SinkHost:
                     "client_id": int(client_id),
                 }
                 self.inbox_messages.append(entry)
-                print(f"[{self.name}] 📥 Inbox de {entry['from_nid'][:8]}...: {entry['message']}")
+                print(f"[{self.name}] Inbox de {entry['from_nid'][:8]}...: {entry['message']}")
 
                 resp_payload = {
                     "service": "inbox",

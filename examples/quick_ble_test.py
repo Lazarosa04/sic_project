@@ -35,11 +35,11 @@ async def quick_scan(adapter: str, duration: float, device_nid: str):
         devices = await manager.scan_for_uplinks(duration=duration, adapter=adapter)
         
         if devices:
-            print(f"\n✅ SUCESSO! {len(devices)} dispositivo(s) encontrado(s):")
+            print(f"\nSUCESSO! {len(devices)} dispositivo(s) encontrado(s):")
             for nid, hop in devices.items():
                 print(f"  • {nid} (Hop: {hop})")
         else:
-            print(f"\n⚠️ Nenhum dispositivo BLE encontrado.")
+            print(f"\nNenhum dispositivo BLE encontrado.")
             print(f"[INFO] Isso é esperado se não houver dispositivos BLE ativos próximos.")
             print(f"[INFO] Para testar com dispositivos reais:")
             print(f"  1. Execute este script em 2+ dispositivos com BLE")
@@ -48,7 +48,7 @@ async def quick_scan(adapter: str, duration: float, device_nid: str):
             print(f"  4. Execute este script em outros dispositivos (Nodes)")
         
     except Exception as e:
-        print(f"\n❌ ERRO: {e}")
+        print(f"\nERRO: {e}")
         print(f"\n[DIAGNÓSTICO]")
         print(f"  • Bluetooth está ativado? Verifique configurações do sistema")
         print(f"  • Adaptador BLE disponível? Execute: hciconfig (Linux)")

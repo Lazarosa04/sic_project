@@ -236,7 +236,7 @@ class BLEConnectionManager:
                 self.uplink_client = client
                 self.uplink_address = device.address
 
-                print(f"[BLE] ✅ Conectado a {target_nid[:8]}... (Uplink estabelecido)")
+                print(f"[BLE] Conectado a {target_nid[:8]}... (Uplink estabelecido)")
                 # Small delay to avoid race where services aren't ready yet on
                 # some backends. Then trigger explicit service discovery.
                 try:
@@ -391,7 +391,7 @@ class BLEConnectionManager:
             # Armazenar como Downlink
             self.downlink_clients[device_nid] = client
             
-            print(f"[BLE] ✅ Downlink aceito: {device_nid[:8]}... (Total: {len(self.downlink_clients)})")
+            print(f"[BLE] Downlink aceito: {device_nid[:8]}... (Total: {len(self.downlink_clients)})")
             
             # Subscrever notificações
             await self._subscribe_notifications(client)
@@ -405,11 +405,11 @@ class BLEConnectionManager:
     def _on_disconnect(self, client: BleakClient):
         """Callback chamado quando uma conexão é perdida"""
         address = client.address
-        print(f"[BLE] ⚠️ Desconexão detectada: {address}")
+        print(f"[BLE] Desconexão detectada: {address}")
         
         # Verificar se era o Uplink
         if self.uplink_client and self.uplink_client.address == address:
-            print(f"[BLE] 🚨 UPLINK PERDIDO!")
+            print(f"[BLE] UPLINK PERDIDO!")
             self.uplink_client = None
             self.uplink_address = None
             # Notify upper layer (IoTNode) that uplink was lost
@@ -609,7 +609,7 @@ class BLEConnectionManager:
         try:
             ok = await self._send_fragmented_to_client(client, data)
             if ok:
-                print(f"[BLE] ✉️ Enviado {len(data)} bytes (frag) para Downlink {target_nid[:8]}...")
+                print(f"[BLE] Enviado {len(data)} bytes (frag) para Downlink {target_nid[:8]}...")
             return ok
         except Exception as e:
             print(f"[BLE] ERRO ao enviar para Downlink: {e}")
@@ -784,7 +784,7 @@ class BLEAdvertiser:
         - Windows: Windows.Devices.Bluetooth.Advertisement
         - macOS: CoreBluetooth (não suporta peripheral mode facilmente)
         """
-        print(f"[BLE ADV] ⚠️ Advertisement não suportado diretamente pelo Bleak.")
+        print(f"[BLE ADV] Advertisement não suportado diretamente pelo Bleak.")
         print(f"[BLE ADV] Para implementação completa, use BlueZ D-Bus API (Linux) ou APIs nativas.")
         print(f"[BLE ADV] Dados que seriam transmitidos: NID={self.device_nid[:8]}..., Hop={self.hop_count}")
     

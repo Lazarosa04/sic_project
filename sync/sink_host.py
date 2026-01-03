@@ -316,7 +316,7 @@ class SinkHost:
                 return
             validated = validate_auth1(message, self.ca_certificate)
             if not validated:
-                print(f"[{self.name}] ❌ LINK_AUTH1 inválido - certificado não validado pela CA")
+                print(f"[{self.name}] LINK_AUTH1 inválido - certificado não validado pela CA")
                 return
             peer_nid, _peer_pub, peer_eph_pub, peer_nonce = validated
 
@@ -325,9 +325,9 @@ class SinkHost:
                 # Derivar session key (Sec. 5.5)
                 key = derive_link_key(eph_priv_b, peer_eph_pub, peer_nonce, nonce_b)
                 self.link_sessions[peer_nid] = LinkSession(peer_nid=peer_nid, key=key)
-                print(f"[{self.name}] ✅ Sessão de link estabelecida com {peer_nid[:8]}...")
+                print(f"[{self.name}] Sessão de link estabelecida com {peer_nid[:8]}...")
             except Exception as e:
-                print(f"[{self.name}] ❌ Erro ao derivar chave de sessão: {e}")
+                print(f"[{self.name}] Erro ao derivar chave de sessão: {e}")
                 return
 
             # Registar como downlink direto
@@ -351,11 +351,11 @@ class SinkHost:
                 return
             session = self.link_sessions.get(link_sender)
             if not session:
-                print(f"[{self.name}] ⚠️ LINK_SECURE de peer sem sessão: {link_sender[:8]}...")
+                print(f"[{self.name}] LINK_SECURE de peer sem sessão: {link_sender[:8]}...")
                 return
             inner = unwrap_link_secure(session, message)
             if not inner:
-                print(f"[{self.name}] ❌ LINK_SECURE inválido (MAC/replay)")
+                print(f"[{self.name}] LINK_SECURE inválido (MAC/replay)")
                 return
             message = inner
             source_link_nid = link_sender
@@ -367,7 +367,7 @@ class SinkHost:
                 self.downlinks[source_nid] = True
                 if source_link_nid and source_link_nid != "UNKNOWN":
                     self.forwarding_table[source_nid] = source_link_nid
-                print(f"[{self.name}] ✅ Downlink registado: {source_nid[:8]}...")
+                print(f"[{self.name}] Downlink registado: {source_nid[:8]}...")
             return
 
         # Sink não processa heartbeats
@@ -387,7 +387,7 @@ class SinkHost:
                 return
             validated = validate_hello1(message, self.ca_certificate)
             if not validated:
-                print(f"[{self.name}] ❌ E2E_HELLO1 inválido")
+                print(f"[{self.name}] E2E_HELLO1 inválido")
                 return
             peer_nid, client_id, peer_eph_pub, peer_nonce = validated
 
@@ -395,9 +395,9 @@ class SinkHost:
             try:
                 key = derive_e2e_key(eph_priv_b, peer_eph_pub, peer_nonce, nonce_b, int(client_id))
                 self.e2e_sessions[(peer_nid, int(client_id))] = E2ESession(peer_nid=peer_nid, client_id=int(client_id), key=key)
-                print(f"[{self.name}] ✅ Sessão E2E estabelecida: {peer_nid[:8]}... (client_id={client_id})")
+                print(f"[{self.name}] Sessão E2E estabelecida: {peer_nid[:8]}... (client_id={client_id})")
             except Exception as e:
-                print(f"[{self.name}] ❌ Erro ao derivar chave E2E: {e}")
+                print(f"[{self.name}] Erro ao derivar chave E2E: {e}")
                 return
 
             out = {
@@ -423,14 +423,14 @@ class SinkHost:
                 return
             session = self.e2e_sessions.get((source_nid, int(client_id)))
             if not session:
-                print(f"[{self.name}] ⚠️ E2E_SECURE sem sessão estabelecida")
+                print(f"[{self.name}] E2E_SECURE sem sessão estabelecida")
                 return
             record = message.get("record")
             if not isinstance(record, dict):
                 return
             inner = unwrap_e2e_record(session, record)
             if not inner:
-                print(f"[{self.name}] ❌ E2E_SECURE inválido (AES-GCM/replay)")
+                print(f"[{self.name}] E2E_SECURE inválido (AES-GCM/replay)")
                 return
 
             if inner.get("service") == "inbox":
@@ -441,7 +441,7 @@ class SinkHost:
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 self.inbox_messages.append(entry)
-                print(f"[{self.name}] 📥 Inbox de {entry['from_nid'][:8]}...: {entry['message']}")
+                print(f"[{self.name}] Inbox de {entry['from_nid'][:8]}...: {entry['message']}")
 
                 # Enviar ACK
                 resp_payload = {"service": "inbox", "ack": True, "echo": entry["message"]}
@@ -555,12 +555,12 @@ class SinkHost:
     def stop_heartbeat_to(self, downlink_nid: str) -> None:
         """Para de enviar heartbeats para um downlink específico (Sec. 4)."""
         self.blocked_heartbeat_downlinks.add(downlink_nid)
-        print(f"[{self.name}] 🚫 Heartbeat bloqueado para {downlink_nid[:8]}...")
+        print(f"[{self.name}] Heartbeat bloqueado para {downlink_nid[:8]}...")
 
     def start_heartbeat_to(self, downlink_nid: str) -> None:
         """Retoma envio de heartbeats para um downlink (Sec. 4)."""
         self.blocked_heartbeat_downlinks.discard(downlink_nid)
-        print(f"[{self.name}] ✅ Heartbeat desbloqueado para {downlink_nid[:8]}...")
+        print(f"[{self.name}] Heartbeat desbloqueado para {downlink_nid[:8]}...")
 
     # ==================== USER INTERFACE (Sec. 6) ====================
     
@@ -591,7 +591,7 @@ class SinkHost:
         print(f"| Hop Count: {status['hop_count']}")
         print(f"| Downlinks ({status['downlinks_count']}):")
         for nid in status['downlinks']:
-            blocked = "🚫" if nid in self.blocked_heartbeat_downlinks else "✅"
+            blocked = "BLOQUEADO" if nid in self.blocked_heartbeat_downlinks else "OK"
             print(f"|   {blocked} {nid[:8]}...")
         print(f"| Forwarding Table ({status['forwarding_table_count']} entradas):")
         for dest, hop in status['forwarding_table'].items():

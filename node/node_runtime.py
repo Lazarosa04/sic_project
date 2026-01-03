@@ -140,21 +140,21 @@ class NodeRuntime:
             try:
                 if hasattr(self.node.ble_advertiser, 'start'):
                     await self.node.ble_advertiser.start()
-                    print(f"✅ Advertiser iniciado (hop={self.node.hop_count})")
+                    print(f"Advertiser iniciado (hop={self.node.hop_count})")
             except Exception as e:
-                print(f"⚠️ Advertiser não iniciado: {e}")
+                print(f"Advertiser não iniciado: {e}")
         
         # Iniciar GATT server
         if self.gatt_server:
             try:
                 await self.gatt_server.start()
-                print(f"✅ GATT server iniciado")
+                print(f"GATT server iniciado")
             except Exception as e:
-                print(f"⚠️ GATT server não iniciado: {e}")
+                print(f"GATT server não iniciado: {e}")
         
-        print(f"\n📡 Node NID: {self.node.nid}")
-        print(f"📊 Hop Count: {self.node.hop_count}")
-        print(f"🔗 Uplink: {'Nenhum' if not self.node.uplink_nid else self.node.uplink_nid[:8] + '...'}\n")
+        print(f"\nNode NID: {self.node.nid}")
+        print(f"Hop Count: {self.node.hop_count}")
+        print(f"Uplink: {'Nenhum' if not self.node.uplink_nid else self.node.uplink_nid[:8] + '...'}\n")
 
     async def stop(self):
         """Para o Node Runtime."""
@@ -182,17 +182,17 @@ class NodeRuntime:
         
         # Uplink status
         if n.uplink_nid:
-            print(f"| Uplink: ✅ {n.uplink_nid[:8]}...")
+            print(f"| Uplink: OK {n.uplink_nid[:8]}...")
             session = n.link_sessions.get(n.uplink_nid)
             if session:
                 print(f"|   └─ Sessão de link estabelecida")
         else:
-            print(f"| Uplink: ❌ Desconectado")
+            print(f"| Uplink: Desconectado")
         
         # Downlinks
         print(f"| Downlinks ({len(n.downlinks)}):")
         for nid in n.downlinks.keys():
-            blocked = "🚫" if nid in n.blocked_heartbeat_downlinks else "✅"
+            blocked = "BLOQUEADO" if nid in n.blocked_heartbeat_downlinks else "OK"
             print(f"|   {blocked} {nid[:8]}...")
         
         # Forwarding table
@@ -265,29 +265,30 @@ class NodeRuntime:
                 except Exception:
                     print('Duração inválida; usando 5s')
             try:
-                print(f"\n🔍 Scanning por {secs}s...")
+                print(f"\nScanning por {secs}s...")
                 results = await self.node.find_uplink_candidates(scan_duration=secs)
                 self.scan_results = results
                 if not results:
-                    print('❌ Nenhum dispositivo encontrado.')
+                    print('Nenhum dispositivo encontrado.')
                 else:
-                    print(f"\n✅ {len(results)} dispositivo(s) encontrado(s):")
+                    print(f"\n{len(results)} dispositivo(s) encontrado(s):")
                     print("-" * 50)
                     for i, (nid, hop) in enumerate(results.items()):
                         hop_str = f"hop={hop}" if hop >= 0 else "hop=N/A (desconectado)"
-                        marker = "⭐" if hop == 0 else "  "  # Sink
-                        print(f"[{i}] {marker} {nid} ({hop_str})")
+                        marker = "(sink)" if hop == 0 else ""
+                        prefix = f"{marker} " if marker else ""
+                        print(f"[{i}] {prefix}{nid} ({hop_str})")
                     print("-" * 50)
             except Exception as e:
-                print(f"❌ Scan falhou: {e}")
+                print(f"Scan falhou: {e}")
             return True
 
         # ==================== LIST ====================
         if cmd == 'list':
             if not self.scan_results:
-                print('⚠️ Sem resultados de scan. Execute "scan" primeiro.')
+                print('Sem resultados de scan. Execute "scan" primeiro.')
             else:
-                print(f"\n📋 Últimos resultados ({len(self.scan_results)} dispositivos):")
+                print(f"\nÚltimos resultados ({len(self.scan_results)} dispositivos):")
                 print("-" * 50)
                 for i, (nid, hop) in enumerate(self.scan_results.items()):
                     hop_str = f"hop={hop}" if hop >= 0 else "hop=N/A"
@@ -302,7 +303,7 @@ class NodeRuntime:
                 return True
             
             if self.node.uplink_nid:
-                print(f'⚠️ Já conectado a {self.node.uplink_nid[:8]}...')
+                print(f'Já conectado a {self.node.uplink_nid[:8]}...')
                 print('   Use "disconnect" primeiro.')
                 return True
             
@@ -313,34 +314,34 @@ class NodeRuntime:
                 try:
                     target_nid = list(self.scan_results.keys())[idx]
                 except Exception:
-                    print('❌ Índice fora de alcance.')
+                    print('Índice fora de alcance.')
                     return True
             else:
                 target_nid = target
 
-            print(f'🔗 Conectando a {target_nid[:8]}...')
+            print(f'Conectando a {target_nid[:8]}...')
             try:
                 ok = await self.node.connect_to_uplink(target_nid)
                 if ok:
-                    print(f'✅ Conectado! Novo hop count: {self.node.hop_count}')
+                    print(f'Conectado! Novo hop count: {self.node.hop_count}')
                 else:
-                    print(f'❌ Falha ao conectar.')
+                    print(f'Falha ao conectar.')
             except Exception as e:
-                print(f'❌ Erro: {e}')
+                print(f'Erro: {e}')
             return True
 
         # ==================== DISCONNECT ====================
         if cmd == 'disconnect':
             if not self.node.uplink_nid:
-                print('⚠️ Não está conectado a nenhum uplink.')
+                print('Não está conectado a nenhum uplink.')
                 return True
             
-            print(f'🔌 Desconectando de {self.node.uplink_nid[:8]}...')
+            print(f'Desconectando de {self.node.uplink_nid[:8]}...')
             try:
                 await self.node.disconnect_uplink()
-                print(f'✅ Desconectado. Hop count: {self.node.hop_count}')
+                print(f'Desconectado. Hop count: {self.node.hop_count}')
             except Exception as e:
-                print(f'❌ Erro: {e}')
+                print(f'Erro: {e}')
             return True
 
         # ==================== STOP_HB (Sec. 4) ====================
@@ -352,7 +353,7 @@ class NodeRuntime:
             if nid.isdigit() and int(nid) < len(list(self.node.downlinks.keys())):
                 nid = list(self.node.downlinks.keys())[int(nid)]
             self.node.block_heartbeat_to_downlink(nid)
-            print(f'🚫 Heartbeat bloqueado para {nid[:8]}...')
+            print(f'Heartbeat bloqueado para {nid[:8]}...')
             return True
 
         # ==================== START_HB (Sec. 4) ====================
@@ -364,16 +365,16 @@ class NodeRuntime:
             if nid.isdigit() and int(nid) < len(list(self.node.downlinks.keys())):
                 nid = list(self.node.downlinks.keys())[int(nid)]
             self.node.unblock_heartbeat_to_downlink(nid)
-            print(f'✅ Heartbeat desbloqueado para {nid[:8]}...')
+            print(f'Heartbeat desbloqueado para {nid[:8]}...')
             return True
 
         # ==================== BLOCKED_HB ====================
         if cmd == 'blocked_hb':
             blocked = self.node.list_blocked_heartbeats()
             if not blocked:
-                print('✅ Nenhum downlink bloqueado.')
+                print('Nenhum downlink bloqueado.')
             else:
-                print(f'\n🚫 Downlinks bloqueados ({len(blocked)}):')
+                print(f'\nDownlinks bloqueados ({len(blocked)}):')
                 for b in blocked:
                     print(f'  - {b}')
             return True
@@ -385,19 +386,19 @@ class NodeRuntime:
                 return True
             
             if not self.node.uplink_nid:
-                print('❌ Não conectado. Use "connect" primeiro.')
+                print('Não conectado. Use "connect" primeiro.')
                 return True
             
             text = ' '.join(parts[1:])
-            print(f'📤 Enviando Inbox: "{text}"')
+            print(f'Enviando Inbox: "{text}"')
             try:
                 ok = await self.node.send_inbox_message(text)
                 if ok:
-                    print('✅ Mensagem enviada com sucesso (E2E protegida)')
+                    print('Mensagem enviada com sucesso (E2E protegida)')
                 else:
-                    print('❌ Falha ao enviar mensagem')
+                    print('Falha ao enviar mensagem')
             except Exception as e:
-                print(f'❌ Erro: {e}')
+                print(f'Erro: {e}')
             return True
 
         # ==================== STATUS (Sec. 6) ====================
@@ -409,9 +410,9 @@ class NodeRuntime:
         if cmd == 'ft':
             ft = self.node.forwarding_table
             if not ft:
-                print('📋 Forwarding table vazia.')
+                print('Forwarding table vazia.')
             else:
-                print(f'\n📋 Forwarding Table ({len(ft)} entradas):')
+                print(f'\nForwarding Table ({len(ft)} entradas):')
                 print("-" * 60)
                 print(f"{'Destination':<40} {'Next Hop':<20}")
                 print("-" * 60)
@@ -433,10 +434,10 @@ class NodeRuntime:
             else:
                 self.debug_mode = not self.debug_mode
                 self.node._debug_mode = self.debug_mode
-            print(f'🔧 Debug mode: {"ON" if self.debug_mode else "OFF"}')
+            print(f'Debug mode: {"ON" if self.debug_mode else "OFF"}')
             return True
 
-        print(f'❓ Comando desconhecido: {cmd}. Digite "help" para ajuda.')
+        print(f'Comando desconhecido: {cmd}. Digite "help" para ajuda.')
         return True
 
 
@@ -502,4 +503,4 @@ if __name__ == '__main__':
     try:
         asyncio.run(main(node_name=args.name, adapter=args.adapter))
     except KeyboardInterrupt:
-        print('\n\n👋 Node encerrado pelo utilizador.')
+        print('\n\nNode encerrado pelo utilizador.')

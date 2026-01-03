@@ -41,15 +41,15 @@ async def test_ble_discovery():
         candidates = await node_a.find_uplink_candidates(scan_duration=8.0)
         
         if candidates:
-            print(f"\n[TEST] ✅ {len(candidates)} dispositivos descobertos:")
+            print(f"\n[TEST] {len(candidates)} dispositivos descobertos:")
             for nid, hop_count in candidates.items():
                 print(f"  • {nid[:8]}... (Hop Count: {hop_count})")
         else:
-            print(f"\n[TEST] ⚠️ Nenhum dispositivo BLE descoberto.")
+            print(f"\n[TEST] Nenhum dispositivo BLE descoberto.")
             print(f"[INFO] Isso é normal se não houver hardware BLE ativo nas proximidades.")
         
     except Exception as e:
-        print(f"\n[TEST] ❌ Erro durante scanning: {e}")
+        print(f"\n[TEST] Erro durante scanning: {e}")
         print(f"[INFO] Certifique-se de que o adaptador BLE está ativo e o script tem permissões necessárias.")
 
 
@@ -90,12 +90,12 @@ async def test_ble_connection():
         node_a.uplink_nid = sink.nid
         node_a.hop_count = 1
         
-        print(f"[TEST] ✅ Conexão simulada estabelecida:")
+        print(f"[TEST] Conexão simulada estabelecida:")
         print(f"  • Uplink: {node_a.uplink_nid[:8]}...")
         print(f"  • Hop Count: {node_a.hop_count}")
     
     else:
-        print(f"[TEST] ❌ BLE Manager não disponível.")
+        print(f"[TEST] BLE Manager não disponível.")
 
 
 async def test_ble_disconnection():
@@ -124,7 +124,7 @@ async def test_ble_disconnection():
     # Desconectar
     await node_a.disconnect_uplink()
     
-    print(f"\n[TEST] ✅ Desconexão completa:")
+    print(f"\n[TEST] Desconexão completa:")
     print(f"  • Uplink: {node_a.uplink_nid}")
     print(f"  • Hop Count: {node_a.hop_count}")
     print(f"  • Estado: {'DESCONECTADO' if node_a.hop_count == -1 else 'CONECTADO'}")
@@ -159,10 +159,10 @@ async def test_heartbeat_broadcast():
     
     try:
         count = await sink.send_heartbeat_ble(heartbeat_counter=1)
-        print(f"[TEST] ✅ Heartbeat enviado para {count} Downlinks")
+        print(f"[TEST] Heartbeat enviado para {count} Downlinks")
         print(f"[INFO] Com hardware real, cada Node conectado receberia o Heartbeat.")
     except Exception as e:
-        print(f"[TEST] ⚠️ Esperado sem hardware: {e}")
+        print(f"[TEST] Esperado sem hardware: {e}")
 
 
 async def main():

@@ -375,20 +375,20 @@ class IoTNode:
         # Se ainda não temos um Sink conhecido, aceitar este
         if not self._current_network_sink_nid:
             self._current_network_sink_nid = hb_source_nid
-            print(f"[{self.name}] 🔗 Sink da rede identificado: {hb_source_nid[:8]}...")
+            print(f"[{self.name}] Sink da rede identificado: {hb_source_nid[:8]}...")
             return False
         
         # Verificar se o Sink mudou
         if hb_source_nid != self._current_network_sink_nid:
             old_sink = self._current_network_sink_nid[:8]
             new_sink = hb_source_nid[:8]
-            print(f"[{self.name}] ⚠️ SINK MUDOU: {old_sink}... → {new_sink}...")
+            print(f"[{self.name}] SINK MUDOU: {old_sink}... → {new_sink}...")
             
             # Invalidar todas as sessões E2E com o Sink antigo
             old_sessions = [k for k in self.e2e_sessions.keys() if k[0] == self._current_network_sink_nid]
             for session_key in old_sessions:
                 del self.e2e_sessions[session_key]
-                print(f"[{self.name}] 🗑️ Sessão E2E invalidada: client_id={session_key[1]}")
+                print(f"[{self.name}] Sessão E2E invalidada: client_id={session_key[1]}")
             
             # Atualizar o Sink atual
             self._current_network_sink_nid = hb_source_nid
@@ -410,7 +410,7 @@ class IoTNode:
         # Verificar mudança de Sink (Feature Bónus)
         sink_changed = self._check_sink_change(heartbeat_msg)
         if sink_changed:
-            print(f"[{self.name}] ℹ️ Sessões E2E serão re-estabelecidas na próxima comunicação")
+            print(f"[{self.name}] Sessões E2E serão re-estabelecidas na próxima comunicação")
             
         if self.sink_certificate:
             sink_public_key = self.sink_certificate.public_key()
@@ -450,7 +450,7 @@ class IoTNode:
                     try:
                         success = await self.ble_manager.send_to_downlink(downlink_nid, hb_bytes)
                         if not success:
-                            print(f"[{self.name}] ⚠️ Falha ao enviar HB para downlink {downlink_nid[:8]}...")
+                            print(f"[{self.name}] Falha ao enviar HB para downlink {downlink_nid[:8]}...")
                     except Exception as e:
                         print(f"[{self.name}] Erro ao enviar HB para {downlink_nid[:8]}...: {e}")
             except Exception as e:
@@ -473,7 +473,7 @@ class IoTNode:
         self.lost_heartbeats += 1
         
         if self.lost_heartbeats > MAX_LOST_HEARTBEATS:
-            print(f"[{self.name}] ⚠️ Heartbeat perdido {self.lost_heartbeats}x. Desconectando e reinserindo na rede...")
+            print(f"[{self.name}] Heartbeat perdido {self.lost_heartbeats}x. Desconectando e reinserindo na rede...")
             await self.disconnect_uplink()
             await self.rejoin_network()
 
@@ -503,7 +503,7 @@ class IoTNode:
         if self.ble_advertiser:
             self.ble_advertiser.update_hop_count(DISCONNECTED_HOP_COUNT)
         
-        print(f"[{self.name}] 🚨 Uplink desconectado. Reiniciando...")
+        print(f"[{self.name}] Uplink desconectado. Reiniciando...")
         
     # --- Funções de Roteamento ---
     
@@ -574,7 +574,7 @@ class IoTNode:
         if message.get("type") == "REGISTER":
             if source_nid and source_nid not in self.downlinks:
                 self.downlinks[source_nid] = True
-                print(f"[{self.name}] ✅ Novo Downlink registado: {source_nid[:8]}...")
+                print(f"[{self.name}] Novo Downlink registado: {source_nid[:8]}...")
             if source_nid:
                 self.update_forwarding_table(source_nid, source_link_nid)
             return
@@ -613,7 +613,7 @@ class IoTNode:
                 if not inner:
                     return
                 if inner.get("service") == "inbox":
-                    print(f"[{self.name}] 📥 Inbox: {inner}")
+                    print(f"[{self.name}] Inbox: {inner}")
                 return
 
         # Checagem de Heartbeat
@@ -724,7 +724,7 @@ class IoTNode:
 
         ok = await self.ensure_e2e_session(int(client_id))
         if not ok:
-            print(f"[{self.name}] ⚠️ Falha ao estabelecer sessão E2E com o Sink")
+            print(f"[{self.name}] Falha ao estabelecer sessão E2E com o Sink")
             return False
 
         session = self.e2e_sessions[(self.sink_nid, int(client_id))]
@@ -815,14 +815,14 @@ class IoTNode:
             if self.ble_advertiser:
                 self.ble_advertiser.update_hop_count(self.hop_count)
             
-            print(f"[{self.name}] ✅ Conectado ao Uplink. Novo Hop Count: {self.hop_count}")
+            print(f"[{self.name}] Conectado ao Uplink. Novo Hop Count: {self.hop_count}")
             # Establish per-link authenticated session (mutual auth + session key)
             try:
                 auth_ok = await self._initiate_link_auth(uplink_nid)
             except Exception:
                 auth_ok = False
             if not auth_ok:
-                print(f"[{self.name}] ⚠️ Falha na autenticação mútua com o uplink {uplink_nid[:8]}... (sessão não estabelecida)")
+                print(f"[{self.name}] Falha na autenticação mútua com o uplink {uplink_nid[:8]}... (sessão não estabelecida)")
             # After hop update, give BlueZ a brief moment to publish adv
             try:
                 await asyncio.sleep(0.2)
